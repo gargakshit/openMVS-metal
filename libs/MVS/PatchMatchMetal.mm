@@ -166,6 +166,26 @@ static bool Dispatch2D(
 	return true;
 }
 
+static void DispatchThreads2D(id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline, uint32_t width, uint32_t height)
+{
+	const NSUInteger groupWidth = std::min<NSUInteger>((NSUInteger)width, 16u);
+	const NSUInteger groupHeight = std::min<NSUInteger>(
+		(NSUInteger)height,
+		std::max<NSUInteger>(1u, [pipeline maxTotalThreadsPerThreadgroup] / groupWidth));
+	[encoder dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(groupWidth, groupHeight, 1)];
+}
+
+static void EncodeDispatch2D(
+	id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline,
+	uint32_t width, uint32_t height,
+	id<MTLBuffer> const* buffers, NSUInteger numBuffers)
+{
+	[encoder setComputePipelineState:pipeline];
+	for (NSUInteger i = 0; i < numBuffers; ++i)
+		[encoder setBuffer:buffers[i] offset:0 atIndex:i];
+	DispatchThreads2D(encoder, pipeline, width, height);
+}
+
 static const float* ResolveLowDepths(const float* lowDepths, size_t area, std::vector<float>& zeroLowDepths)
 {
 	if (lowDepths != nullptr)
@@ -708,6 +728,166 @@ bool LaunchFilterPlanes(
 		std::memcpy(planes, [planesBuffer contents], sizeof(Point4)*area);
 		std::memcpy(costs, [costsBuffer contents], sizeof(float)*area);
 		std::memcpy(selectedViews, [viewsBuffer contents], sizeof(uint32_t)*area);
+		return true;
+	}
+}
+
+static bool LaunchPatchMatchLevelResident(
+	const float* imageRef,
+	const float* targetImages, uint32_t targetImageFloats, const uint32_t* targetImageOffsets,
+	Point4* planes, float* costs, uint32_t* selectedViews,
+	const Camera& refCamera, const Camera* targetCameras,
+	uint32_t width, uint32_t height, uint32_t numTargets, uint32_t initTopK, uint32_t numIterations,
+	float depthMin, float depthMax, const float* lowDepths,
+	const float* depthImages, uint32_t depthImageFloats, const uint32_t* depthImageOffsets,
+	bool geometricConsistency, float thresholdKeepCost,
+	std::string* error)
+{
+	const size_t area((size_t)width * (size_t)height);
+	if (area == 0)
+		return true;
+	if (imageRef == nullptr || targetImages == nullptr || targetImageOffsets == nullptr ||
+		planes == nullptr || costs == nullptr || selectedViews == nullptr || targetCameras == nullptr)
+	{
+		SetError(error, @"invalid PatchMatch resident-level null input");
+		return false;
+	}
+	if (numTargets == 0 || numTargets > 32 || initTopK == 0 || initTopK > numTargets) {
+		SetError(error, @"invalid PatchMatch resident-level view counts");
+		return false;
+	}
+	if (targetImageFloats == 0 || depthMax <= depthMin) {
+		SetError(error, @"invalid PatchMatch resident-level inputs");
+		return false;
+	}
+	std::vector<float> zeroLowDepths;
+	lowDepths = ResolveLowDepths(lowDepths, area, zeroLowDepths);
+
+	std::vector<float> zeroDepthImages;
+	const uint32_t useGeometricConsistency(geometricConsistency ? 1u : 0u);
+	if (geometricConsistency) {
+		if (depthImages == nullptr || depthImageOffsets == nullptr || depthImageFloats == 0) {
+			SetError(error, @"missing depth images for geometric PatchMatch resident level");
+			return false;
+		}
+	} else {
+		zeroDepthImages.assign(targetImageFloats, 0.f);
+		depthImages = zeroDepthImages.data();
+		depthImageFloats = targetImageFloats;
+		depthImageOffsets = targetImageOffsets;
+	}
+
+	@autoreleasepool {
+		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+		if (device == nil) {
+			SetError(error, @"no default Metal device");
+			return false;
+		}
+		id<MTLComputePipelineState> initializePipeline = CreatePipeline(device, @"kernelInitializeScore", error);
+		id<MTLComputePipelineState> propagatePipeline = CreatePipeline(device, @"kernelPropagateScore", error);
+		id<MTLComputePipelineState> filterPipeline = nil;
+		if (thresholdKeepCost > 0.f)
+			filterPipeline = CreatePipeline(device, @"kernelFilterPlanes", error);
+		if (initializePipeline == nil || propagatePipeline == nil || (thresholdKeepCost > 0.f && filterPipeline == nil))
+			return false;
+		id<MTLCommandQueue> queue = [device newCommandQueue];
+		if (queue == nil) {
+			SetError(error, @"failed to create Metal command queue");
+			return false;
+		}
+
+		id<MTLBuffer> imageRefBuffer = [device newBufferWithBytes:imageRef length:sizeof(float)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> targetImagesBuffer = [device newBufferWithBytes:targetImages length:sizeof(float)*targetImageFloats options:MTLResourceStorageModeShared];
+		id<MTLBuffer> targetOffsetsBuffer = [device newBufferWithBytes:targetImageOffsets length:sizeof(uint32_t)*numTargets options:MTLResourceStorageModeShared];
+		id<MTLBuffer> planesBuffer = [device newBufferWithBytes:planes length:sizeof(Point4)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> costsBuffer = [device newBufferWithBytes:costs length:sizeof(float)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> selectedViewsBuffer = [device newBufferWithBytes:selectedViews length:sizeof(uint32_t)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> refCameraBuffer = [device newBufferWithBytes:&refCamera length:sizeof(refCamera) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> targetCamerasBuffer = [device newBufferWithBytes:targetCameras length:sizeof(Camera)*numTargets options:MTLResourceStorageModeShared];
+		id<MTLBuffer> widthBuffer = [device newBufferWithBytes:&width length:sizeof(width) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> heightBuffer = [device newBufferWithBytes:&height length:sizeof(height) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> numTargetsBuffer = [device newBufferWithBytes:&numTargets length:sizeof(numTargets) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> initTopKBuffer = [device newBufferWithBytes:&initTopK length:sizeof(initTopK) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> depthMinBuffer = [device newBufferWithBytes:&depthMin length:sizeof(depthMin) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> depthMaxBuffer = [device newBufferWithBytes:&depthMax length:sizeof(depthMax) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> lowDepthsBuffer = [device newBufferWithBytes:lowDepths length:sizeof(float)*area options:MTLResourceStorageModeShared];
+		id<MTLBuffer> depthImagesBuffer = [device newBufferWithBytes:depthImages length:sizeof(float)*depthImageFloats options:MTLResourceStorageModeShared];
+		id<MTLBuffer> depthOffsetsBuffer = [device newBufferWithBytes:depthImageOffsets length:sizeof(uint32_t)*numTargets options:MTLResourceStorageModeShared];
+		id<MTLBuffer> useGeomBuffer = [device newBufferWithBytes:&useGeometricConsistency length:sizeof(useGeometricConsistency) options:MTLResourceStorageModeShared];
+		id<MTLBuffer> thresholdBuffer = nil;
+		if (thresholdKeepCost > 0.f)
+			thresholdBuffer = [device newBufferWithBytes:&thresholdKeepCost length:sizeof(thresholdKeepCost) options:MTLResourceStorageModeShared];
+		if (imageRefBuffer == nil || targetImagesBuffer == nil || targetOffsetsBuffer == nil ||
+			planesBuffer == nil || costsBuffer == nil || selectedViewsBuffer == nil ||
+			refCameraBuffer == nil || targetCamerasBuffer == nil || widthBuffer == nil || heightBuffer == nil ||
+			numTargetsBuffer == nil || initTopKBuffer == nil || depthMinBuffer == nil || depthMaxBuffer == nil ||
+			lowDepthsBuffer == nil || depthImagesBuffer == nil || depthOffsetsBuffer == nil ||
+			useGeomBuffer == nil || (thresholdKeepCost > 0.f && thresholdBuffer == nil))
+		{
+			SetError(error, @"failed to allocate Metal buffers for resident PatchMatch level");
+			return false;
+		}
+
+		id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if (commandBuffer == nil || encoder == nil) {
+			SetError(error, @"failed to create resident PatchMatch command encoder");
+			return false;
+		}
+
+		id<MTLBuffer> initializeBuffers[] = {
+			imageRefBuffer, targetImagesBuffer, targetOffsetsBuffer,
+			planesBuffer, costsBuffer, selectedViewsBuffer,
+			refCameraBuffer, targetCamerasBuffer,
+			widthBuffer, heightBuffer, numTargetsBuffer, initTopKBuffer,
+			depthMinBuffer, depthMaxBuffer, lowDepthsBuffer,
+			depthImagesBuffer, depthOffsetsBuffer, useGeomBuffer
+		};
+		EncodeDispatch2D(encoder, initializePipeline, width, height, initializeBuffers, 18);
+
+		for (uint32_t iter = 0; iter < numIterations; ++iter) {
+			for (uint32_t pass = 0; pass < 2u; ++pass) {
+				const uint32_t redPassValue(pass);
+				[encoder setComputePipelineState:propagatePipeline];
+				[encoder setBuffer:imageRefBuffer offset:0 atIndex:0];
+				[encoder setBuffer:targetImagesBuffer offset:0 atIndex:1];
+				[encoder setBuffer:targetOffsetsBuffer offset:0 atIndex:2];
+				[encoder setBuffer:planesBuffer offset:0 atIndex:3];
+				[encoder setBuffer:costsBuffer offset:0 atIndex:4];
+				[encoder setBuffer:selectedViewsBuffer offset:0 atIndex:5];
+				[encoder setBuffer:refCameraBuffer offset:0 atIndex:6];
+				[encoder setBuffer:targetCamerasBuffer offset:0 atIndex:7];
+				[encoder setBuffer:widthBuffer offset:0 atIndex:8];
+				[encoder setBuffer:heightBuffer offset:0 atIndex:9];
+				[encoder setBuffer:numTargetsBuffer offset:0 atIndex:10];
+				[encoder setBytes:&iter length:sizeof(iter) atIndex:11];
+				[encoder setBytes:&redPassValue length:sizeof(redPassValue) atIndex:12];
+				[encoder setBuffer:depthMinBuffer offset:0 atIndex:13];
+				[encoder setBuffer:depthMaxBuffer offset:0 atIndex:14];
+				[encoder setBuffer:lowDepthsBuffer offset:0 atIndex:15];
+				[encoder setBuffer:depthImagesBuffer offset:0 atIndex:16];
+				[encoder setBuffer:depthOffsetsBuffer offset:0 atIndex:17];
+				[encoder setBuffer:useGeomBuffer offset:0 atIndex:18];
+				DispatchThreads2D(encoder, propagatePipeline, width, height);
+			}
+		}
+
+		if (thresholdKeepCost > 0.f) {
+			id<MTLBuffer> filterBuffers[] = {planesBuffer, costsBuffer, selectedViewsBuffer, widthBuffer, heightBuffer, thresholdBuffer};
+			EncodeDispatch2D(encoder, filterPipeline, width, height, filterBuffers, 6);
+		}
+
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ([commandBuffer status] != MTLCommandBufferStatusCompleted) {
+			SetError(error, [commandBuffer error], "resident PatchMatch level command buffer failed");
+			return false;
+		}
+
+		std::memcpy(planes, [planesBuffer contents], sizeof(Point4)*area);
+		std::memcpy(costs, [costsBuffer contents], sizeof(float)*area);
+		std::memcpy(selectedViews, [selectedViewsBuffer contents], sizeof(uint32_t)*area);
 		return true;
 	}
 }
@@ -1276,46 +1456,15 @@ static bool EstimateDepthMapLevel(
 	const float* depthImagesPtr(geometricConsistency ? depthImages.data() : nullptr);
 	const uint32_t depthImageFloats(geometricConsistency ? (uint32_t)depthImages.size() : 0u);
 	const uint32_t* depthImageOffsetsPtr(geometricConsistency ? depthImageOffsets.data() : nullptr);
-	if (!LaunchInitializeScore(
+	if (!LaunchPatchMatchLevelResident(
 			refImage.data(),
 			targetImages.data(), (uint32_t)targetImages.size(), targetImageOffsets.data(),
 			planes.data(), costs.data(), selectedViews.data(),
 			refCamera, targetCameras.data(),
-			width, height, numTargets, initTopK,
+			width, height, numTargets, initTopK, numIterations,
 			depthMin, depthMax, lowDepthsPtr,
 			depthImagesPtr, depthImageFloats, depthImageOffsetsPtr,
-			geometricConsistency, error))
-	{
-		return false;
-	}
-	for (uint32_t iter = 0; iter < numIterations; ++iter) {
-		if (!LaunchPropagateScore(
-				refImage.data(),
-				targetImages.data(), (uint32_t)targetImages.size(), targetImageOffsets.data(),
-				planes.data(), costs.data(), selectedViews.data(),
-				refCamera, targetCameras.data(),
-				width, height, numTargets, iter, false,
-				depthMin, depthMax, lowDepthsPtr,
-				depthImagesPtr, depthImageFloats, depthImageOffsetsPtr,
-				geometricConsistency, error))
-		{
-			return false;
-		}
-		if (!LaunchPropagateScore(
-				refImage.data(),
-				targetImages.data(), (uint32_t)targetImages.size(), targetImageOffsets.data(),
-				planes.data(), costs.data(), selectedViews.data(),
-				refCamera, targetCameras.data(),
-				width, height, numTargets, iter, true,
-				depthMin, depthMax, lowDepthsPtr,
-				depthImagesPtr, depthImageFloats, depthImageOffsetsPtr,
-				geometricConsistency, error))
-		{
-			return false;
-		}
-	}
-	if (thresholdKeepCost > 0.f &&
-		!LaunchFilterPlanes(planes.data(), costs.data(), selectedViews.data(), width, height, thresholdKeepCost, error))
+			geometricConsistency, thresholdKeepCost, error))
 	{
 		return false;
 	}
