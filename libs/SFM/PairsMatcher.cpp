@@ -1127,8 +1127,8 @@ unsigned PairsMatcher::Match()
 	unsigned newPairs = 0, updatedPairs = 0;
 	size_t numMatches = 0,  numInliers = 0, numFilteredInliers = 0;
 
-	#if defined(_USE_SIFTGPU) && defined(_USE_CUDA)
-	// SiftGPU branch (only if using CUDA, even if SiftGPU can use GLSL for matching, is slower than modern CPU)
+	#if defined(_USE_SIFTGPU)
+	// SiftGPU branch; uses CUDA when compiled/requested, otherwise the GLSL/OpenGL matcher.
 	if (scene.status.nFeaturesType == FeatureType::SIFTGPU) {
 		SiftGPUMatchCoordinator coordinator(*this);
 		if (!coordinator.Initialize()) {

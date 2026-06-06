@@ -549,7 +549,9 @@ require_contains("ExtractKeyframes CUDA config guard" "${extract_keyframes}" "co
 require_contains("SiftGPU feature extraction CUDA compile guard" "${features_extractor}" "#ifdef _USE_CUDA")
 require_contains("SiftGPU feature extraction CUDA fallback" "${features_extractor}" "constexpr bool useCUDA = false")
 require_contains("SiftGPU feature extraction CUDA option gate" "${features_extractor}" "args.push_back(\"-cuda\")")
-require_contains("SiftGPU matching CUDA compile guard" "${pairs_matcher}" "#if defined(_USE_SIFTGPU) && defined(_USE_CUDA)")
+require_contains("SiftGPU matching compile guard" "${pairs_matcher}" "#if defined(_USE_SIFTGPU)")
+require_absent("SiftGPU matching should not require CUDA" "${pairs_matcher}" "#if defined(_USE_SIFTGPU) && defined(_USE_CUDA)")
+require_contains("SiftGPU matching GLSL fallback" "${pairs_matcher}" "SIFTMATCH_GLSL")
 require_contains("SiftGPU matching CUDA language guard" "${pairs_matcher}" "#ifdef SIFTGPU_CUDA")
 
 require_contains("Ceres CUDA solver guard" "${global_positioning}" "#ifdef _USE_CUDA")
