@@ -34,6 +34,7 @@
 #include "Scene.h"
 #include "Camera.h"
 #include "Window.h"
+#include "../../libs/Common/UtilGPU.h"
 #include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -2573,6 +2574,19 @@ void UI::ShowDensifyWorkflowWindow(Window& window) {
 	ImGui::DragFloat("ROI Border (%)", &opts.borderROI, 0.1f, -100.f, 100.f, "%.2f");
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Percentage to expand (positive) or shrink (negative) the ROI border.\nUseful to include context or tighten the bounds.");
+	const char* backendLabels[] = {"Auto", "CPU", "CUDA", "Metal"};
+	const char* backendValues[] = {"auto", "cpu", "cuda", "metal"};
+	int backendIndex = 0;
+	for (int i = 0; i < IM_ARRAYSIZE(backendValues); ++i) {
+		if (opts.gpuBackend == backendValues[i]) {
+			backendIndex = i;
+			break;
+		}
+	}
+	if (ImGui::Combo("GPU Backend", &backendIndex, backendLabels, IM_ARRAYSIZE(backendLabels)))
+		opts.gpuBackend = backendValues[backendIndex];
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Backend used for depth-map estimation. Auto prefers Metal on Apple and CUDA elsewhere.");
 	#ifdef _USE_CUDA
 	static char cudaDeviceBuf[64] = {};
 	if (cudaDeviceBuf[0] == '\0')

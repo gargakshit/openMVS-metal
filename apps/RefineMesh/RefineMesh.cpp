@@ -31,7 +31,10 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/Common/UtilGPU.h"
 #include <boost/program_options.hpp>
+
+#include <cstdio>
 
 using namespace MVS;
 
@@ -98,6 +101,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
 		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("gpu-backend", boost::program_options::value<std::string>(&SEACAVE::GPU::desiredBackend)->default_value("cpu"), "GPU backend for mesh refinement (auto, cpu, cuda, metal)")
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
@@ -186,6 +190,11 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		OPT::strMeshFileName = Util::getFileFullName(OPT::strInputFileName) + _T(".ply");
 	if (OPT::strOutputFileName.empty())
 		OPT::strOutputFileName = Util::getFileFullName(OPT::strInputFileName) + _T("_refine.mvs");
+	if (SEACAVE::GPU::ParseBackend(SEACAVE::GPU::desiredBackend) == SEACAVE::GPU::Backend::UNKNOWN) {
+		std::fprintf(stderr, "error: unknown GPU backend '%s' (expected auto, cpu, cuda or metal)\n", SEACAVE::GPU::desiredBackend.c_str());
+		VERBOSE("error: unknown GPU backend '%s' (expected auto, cpu, cuda or metal)", SEACAVE::GPU::desiredBackend.c_str());
+		return false;
+	}
 
 	MVS::Initialize(APPNAME, OPT::nMaxThreads, OPT::nProcessPriority);
 	return true;
@@ -228,18 +237,69 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 	}
 	TD_TIMER_START();
+
+	const SEACAVE::GPU::Backend requestedBackend(SEACAVE::GPU::ParseBackend(SEACAVE::GPU::desiredBackend));
+	SEACAVE::GPU::Backend effectiveBackend(requestedBackend);
+	const SEACAVE::GPU::Backend autoBackend(SEACAVE::GPU::AutoBackend());
 	#ifdef _USE_CUDA
-	if (SEACAVE::CUDA::desiredDeviceIDs.empty() ||
-		!scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-							  OPT::nMaxFaceArea,
-							  OPT::nScales, OPT::fScaleStep,
-							  OPT::nAlternatePair,
-							  OPT::fRegularityWeight,
-							  OPT::fRatioRigidityElasticity,
-							  OPT::fGradientStep))
+	if (effectiveBackend == SEACAVE::GPU::Backend::CPU && OPT::vm["gpu-backend"].defaulted() &&
+		!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs))
+		effectiveBackend = SEACAVE::GPU::Backend::CUDA;
 	#endif
-	if (!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+
+	bool bRefined(false);
+	SEACAVE::GPU::Backend selectedRefineBackend(SEACAVE::GPU::Backend::CPU);
+	#ifdef _USE_METAL
+	const bool wantsMetalRefine(effectiveBackend == SEACAVE::GPU::Backend::METAL ||
+		(effectiveBackend == SEACAVE::GPU::Backend::AUTO && autoBackend == SEACAVE::GPU::Backend::METAL));
+	if (wantsMetalRefine) {
+		if (scene.RefineMeshMetal(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+								  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+								  OPT::nMaxFaceArea,
+								  OPT::nScales, OPT::fScaleStep,
+								  OPT::nAlternatePair,
+								  OPT::fRegularityWeight,
+								  OPT::fRatioRigidityElasticity,
+								  OPT::fGradientStep)) {
+			bRefined = true;
+			selectedRefineBackend = SEACAVE::GPU::Backend::METAL;
+		} else {
+			VERBOSE("error: Metal mesh refinement failed; refusing CPU fallback for a selected Metal backend");
+			return EXIT_FAILURE;
+		}
+	}
+	#else
+	if (effectiveBackend == SEACAVE::GPU::Backend::METAL)
+		VERBOSE("warning: Metal backend requested but OpenMVS was built without Metal; using CPU refinement");
+	#endif
+
+	#ifdef _USE_CUDA
+	if (!bRefined &&
+		(effectiveBackend == SEACAVE::GPU::Backend::CUDA ||
+		 (effectiveBackend == SEACAVE::GPU::Backend::AUTO &&
+		  (autoBackend == SEACAVE::GPU::Backend::CUDA || autoBackend == SEACAVE::GPU::Backend::METAL)))) {
+		if (SEACAVE::CUDA::desiredDeviceIDs.empty())
+			SEACAVE::CUDA::desiredDeviceIDs = "-1";
+		if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) &&
+			scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+								 OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+								 OPT::nMaxFaceArea,
+								 OPT::nScales, OPT::fScaleStep,
+								 OPT::nAlternatePair,
+								 OPT::fRegularityWeight,
+								 OPT::fRatioRigidityElasticity,
+								 OPT::fGradientStep)) {
+			bRefined = true;
+			selectedRefineBackend = SEACAVE::GPU::Backend::CUDA;
+		}
+	}
+	#else
+	if (effectiveBackend == SEACAVE::GPU::Backend::CUDA)
+		VERBOSE("warning: CUDA backend requested but OpenMVS was built without CUDA; using CPU refinement");
+	#endif
+
+	if (!bRefined &&
+		!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
 						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
 						  OPT::nMaxFaceArea,
 						  OPT::nScales, OPT::fScaleStep,
@@ -250,6 +310,8 @@ int main(int argc, LPCTSTR* argv)
 						  OPT::fPlanarVertexRatio,
 						  OPT::nReduceMemory))
 		return EXIT_FAILURE;
+	SEACAVE::GPU::SetLastSelectedBackend(selectedRefineBackend);
+	std::fprintf(stderr, "OpenMVS backend selected: RefineMesh %s\n", SEACAVE::GPU::ToString(selectedRefineBackend));
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

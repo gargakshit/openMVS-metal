@@ -31,10 +31,20 @@
 
 #include "../../libs/SFM.h"
 #include "../../libs/MVS.h"
+#include "../../libs/Common/UtilGPU.h"
 #include "../../libs/Math/LeastAbsoluteDeviationSolver.h"
 #include "../../libs/Math/ConfidenceInterval.h"
+#ifdef _USE_METAL
+#include "../../libs/Common/UtilMetal.h"
+#include "../../libs/MVS/PatchMatchMetal.h"
+#include "../../libs/MVS/SceneRefineMetal.h"
+#endif
 #include "TestsSFM.h"
 #include "TestsMVS.h"
+
+#ifdef _USE_METAL
+#include <cstdio>
+#endif
 
 
 // D E F I N E S ///////////////////////////////////////////////////
@@ -45,6 +55,64 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 DEFINE_LOG_NAME(lt, _T("Test    "));
+
+bool ExpectBackend(const char* label, SEACAVE::GPU::Backend got, SEACAVE::GPU::Backend expected)
+{
+	if (got == expected)
+		return true;
+	VERBOSE("ERROR: GPU backend selector %s returned %s, expected %s",
+		label, SEACAVE::GPU::ToString(got), SEACAVE::GPU::ToString(expected));
+	return false;
+}
+
+bool GPUBackendSelectorTest()
+{
+	using SEACAVE::GPU::Backend;
+
+	if (!ExpectBackend("parse auto", SEACAVE::GPU::ParseBackend("auto"), Backend::AUTO) ||
+		!ExpectBackend("parse empty", SEACAVE::GPU::ParseBackend(""), Backend::AUTO) ||
+		!ExpectBackend("parse cpu", SEACAVE::GPU::ParseBackend("cpu"), Backend::CPU) ||
+		!ExpectBackend("parse none", SEACAVE::GPU::ParseBackend("none"), Backend::CPU) ||
+		!ExpectBackend("parse off", SEACAVE::GPU::ParseBackend("off"), Backend::CPU) ||
+		!ExpectBackend("parse cuda", SEACAVE::GPU::ParseBackend("cuda"), Backend::CUDA) ||
+		!ExpectBackend("parse metal", SEACAVE::GPU::ParseBackend("metal"), Backend::METAL) ||
+		!ExpectBackend("parse unknown", SEACAVE::GPU::ParseBackend("vulkan"), Backend::UNKNOWN))
+		return false;
+
+	if (!ExpectBackend("auto none/non-Apple", SEACAVE::GPU::SelectAutoBackend(false, false, false), Backend::CPU) ||
+		!ExpectBackend("auto CUDA/non-Apple", SEACAVE::GPU::SelectAutoBackend(true, false, false), Backend::CUDA) ||
+		!ExpectBackend("auto Metal/non-Apple", SEACAVE::GPU::SelectAutoBackend(false, true, false), Backend::METAL) ||
+		!ExpectBackend("auto CUDA+Metal/non-Apple", SEACAVE::GPU::SelectAutoBackend(true, true, false), Backend::CUDA) ||
+		!ExpectBackend("auto none/Apple", SEACAVE::GPU::SelectAutoBackend(false, false, true), Backend::CPU) ||
+		!ExpectBackend("auto CUDA/Apple", SEACAVE::GPU::SelectAutoBackend(true, false, true), Backend::CUDA) ||
+		!ExpectBackend("auto Metal/Apple", SEACAVE::GPU::SelectAutoBackend(false, true, true), Backend::METAL) ||
+		!ExpectBackend("auto CUDA+Metal/Apple", SEACAVE::GPU::SelectAutoBackend(true, true, true), Backend::METAL))
+		return false;
+
+	if (!ExpectBackend("resolve auto", SEACAVE::GPU::ResolveBackend(Backend::AUTO), SEACAVE::GPU::AutoBackend()) ||
+		!ExpectBackend("resolve explicit CUDA", SEACAVE::GPU::ResolveBackend(Backend::CUDA), Backend::CUDA) ||
+		!ExpectBackend("resolve explicit Metal", SEACAVE::GPU::ResolveBackend(Backend::METAL), Backend::METAL) ||
+		!ExpectBackend("resolve explicit CPU", SEACAVE::GPU::ResolveBackend(Backend::CPU), Backend::CPU))
+		return false;
+
+	#ifdef _USE_CUDA
+	const bool cudaCompiled(true);
+	#else
+	const bool cudaCompiled(false);
+	#endif
+	#ifdef _USE_METAL
+	const bool metalCompiled(true);
+	#else
+	const bool metalCompiled(false);
+	#endif
+	if (SEACAVE::GPU::IsCompiled(Backend::CPU) != true ||
+		SEACAVE::GPU::IsCompiled(Backend::CUDA) != cudaCompiled ||
+		SEACAVE::GPU::IsCompiled(Backend::METAL) != metalCompiled) {
+		VERBOSE("ERROR: GPU backend compiled-state helper mismatch");
+		return false;
+	}
+	return true;
+}
 
 // test various algorithms independently
 bool UnitTests()
@@ -87,10 +155,106 @@ bool UnitTests()
 		VERBOSE("ERROR: TestConfidenceInterval failed!");
 		return false;
 	}
+	if (!GPUBackendSelectorTest()) {
+		VERBOSE("ERROR: GPUBackendSelectorTest failed!");
+		return false;
+	}
 	VERBOSE("All unit tests passed (%s)", TD_TIMER_GET_FMT().c_str());
 	return true;
 }
 /*----------------------------------------------------------------*/
+
+#ifdef _USE_METAL
+bool MetalRuntimeSmokeTest()
+{
+	SEACAVE::METAL::Device device;
+	if (!SEACAVE::METAL::getDefaultDevice(device)) {
+		VERBOSE("ERROR: no default Metal device!");
+		return false;
+	}
+	VERBOSE("Metal device initialized: %s", device.name.c_str());
+	std::string error;
+	if (!SEACAVE::METAL::RunSmokeTest(&error)) {
+		VERBOSE("ERROR: Metal runtime smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunCameraKernelsSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine camera smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunComputeFaceNormalSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine face-normal smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunProjectionKernelsSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine projection-kernel smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunImageKernelsSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine image-kernel smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunWarpKernelsSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine warp-kernel smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunGradientKernelsSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine gradient smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunRefineMeshPairSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine chained pair smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunRefineMeshHostSmoke(&error)) {
+		VERBOSE("ERROR: Metal SceneRefine host smoke test failed: %s", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchScorePlaneSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch score-plane smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch score-plane smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchLowDepthPriorSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch low-depth prior smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch low-depth prior smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchGeometricConsistencySmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch geometric-consistency smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch geometric-consistency smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchInitializeScoreSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch initialize-score smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch initialize-score smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchPropagateScoreSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch propagate-score smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch propagate-score smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchRefineScoreSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch refine-score smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch refine-score smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchFilterPlanesSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch filter smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch filter smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	if (!MVS::METAL::RunPatchMatchHostSmoke(&error)) {
+		VERBOSE("ERROR: Metal PatchMatch host smoke test failed: %s", error.c_str());
+		std::fprintf(stderr, "ERROR: Metal PatchMatch host smoke test failed: %s\n", error.c_str());
+		return false;
+	}
+	VERBOSE("Metal runtime smoke test passed");
+	return true;
+}
+/*----------------------------------------------------------------*/
+#endif
 
 
 // test OpenMVS functionality
@@ -108,11 +272,12 @@ int main(int argc, LPCTSTR* argv)
 	#endif
 	OPEN_LOG();
 	OPEN_LOGCONSOLE();
-	Initialize(APPNAME);
+	Initialize(APPNAME, 4);
 	WORKING_FOLDER = _DATA_PATH;
 	INIT_WORKING_FOLDER;
 	const bool verbose = (argc > 2 && std::atoi(argv[2]) != 0);
 	const bool forceCPU = (argc > 3 && std::atoi(argv[3]) != 0);
+	const char* expectedMVSBackend = (argc > 4 ? argv[4] : nullptr);
 	if (argc < 2 || std::atoi(argv[1]) == 0) {
 		if (!UnitTests())
 			return EXIT_FAILURE;
@@ -199,9 +364,33 @@ int main(int argc, LPCTSTR* argv)
 			return EXIT_FAILURE;
 		if (!SFM::HierarchicalSFMWithRandomTransformTest())
 			return EXIT_FAILURE;
+	} else if (std::atoi(argv[1]) == 3) {
+		#ifdef _USE_METAL
+		if (!MetalRuntimeSmokeTest())
+			return EXIT_FAILURE;
+		#else
+		VERBOSE("ERROR: Metal runtime smoke test requested but OpenMVS was built without Metal!");
+		return EXIT_FAILURE;
+		#endif
+	} else if (std::atoi(argv[1]) == 4) {
+		#ifdef _USE_METAL
+		if (!MVS::RefineMeshMetalSampleTest())
+			return EXIT_FAILURE;
+		#else
+		VERBOSE("ERROR: Metal RefineMesh sample test requested but OpenMVS was built without Metal!");
+		return EXIT_FAILURE;
+		#endif
+	} else if (std::atoi(argv[1]) == 5) {
+		#ifdef _USE_METAL
+		if (!MVS::DenseReconstructionMetalParityTest())
+			return EXIT_FAILURE;
+		#else
+		VERBOSE("ERROR: Metal dense reconstruction parity test requested but OpenMVS was built without Metal!");
+		return EXIT_FAILURE;
+		#endif
 	} else {
 		// Run MVS pipeline test
-		if (!MVS::PipelineTest(forceCPU, verbose))
+		if (!MVS::PipelineTest(forceCPU, verbose, expectedMVSBackend))
 			return EXIT_FAILURE;
 	}
 	Finalize();

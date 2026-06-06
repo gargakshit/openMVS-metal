@@ -167,7 +167,12 @@ private:
 		constexpr float edgeThreshold = 20.f;
 		constexpr unsigned maxNumFeatures = 0; // 0 = no limit
 		constexpr bool upright = false;
-		const bool darknessAdaptivity = extractor.GetConfig().useCUDA ? false : true;
+		#ifdef _USE_CUDA
+		const bool useCUDA(extractor.GetConfig().useCUDA);
+		#else
+		constexpr bool useCUDA = false;
+		#endif
+		const bool darknessAdaptivity(!useCUDA);
 		int gpuIndices[1] = { -1 };
 
 		std::vector<std::string> args;
@@ -178,7 +183,7 @@ private:
 		args.push_back("-v"); args.push_back("0");
 		#endif
 		#ifdef _USE_CUDA
-		if (extractor.GetConfig().useCUDA && gpuIndices[0] < 0)
+		if (useCUDA && gpuIndices[0] < 0)
 			gpuIndices[0] = 0;
 		if (gpuIndices[0] >= 0) {
 			args.push_back("-cuda"); args.push_back(std::to_string(gpuIndices[0]));

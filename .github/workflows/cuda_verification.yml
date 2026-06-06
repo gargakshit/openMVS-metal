@@ -1,0 +1,63 @@
+# Copyright (c) 2026-present Akshit Garg <git+openmvs-metal@akshit.network>
+# Codex sign-off: OpenAI Codex assisted with this file.
+
+name: CUDA Verification
+run-name: CUDA verification for ${{ github.ref_name }}
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_docker_image:
+        description: NVIDIA CUDA devel image to use
+        required: false
+        default: nvidia/cuda:12.9.1-devel-ubuntu24.04
+      build_jobs:
+        description: Parallel build jobs
+        required: false
+        default: "2"
+      vcpkg_jobs:
+        description: Parallel vcpkg dependency build jobs
+        required: false
+        default: "2"
+      ctest_jobs:
+        description: Parallel CTest proof jobs
+        required: false
+        default: "1"
+      ctest_timeout:
+        description: Per-test timeout in seconds
+        required: false
+        default: "1200"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cuda-verification:
+    name: CUDA configure/build/runtime proof
+    runs-on: [self-hosted, linux, x64, cuda]
+    timeout-minutes: 180
+    env:
+      OPENMVS_CUDA_DOCKER_IMAGE: ${{ inputs.cuda_docker_image }}
+      OPENMVS_CUDA_BUILD_JOBS: ${{ inputs.build_jobs }}
+      OPENMVS_CUDA_VCPKG_JOBS: ${{ inputs.vcpkg_jobs }}
+      OPENMVS_CUDA_CTEST_JOBS: ${{ inputs.ctest_jobs }}
+      OPENMVS_CUDA_CTEST_TIMEOUT: ${{ inputs.ctest_timeout }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run CUDA proof
+        run: |
+          scripts/verify-cuda-docker.sh
+
+      - name: Upload CUDA verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-verification-evidence
+          path: cuda-verification-evidence/**
+          if-no-files-found: warn

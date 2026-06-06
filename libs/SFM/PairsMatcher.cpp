@@ -89,8 +89,13 @@ public:
 			return false;
 		}
 		if (gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_GLSL && gpu->GetMaxSift() < maxNumMatches) {
-      		VERBOSE("warning: OpenGL version of SiftGPU only supports a maximum of %d matches; try switching to CUDA to avoid this limitation",
+			#ifdef SIFTGPU_CUDA
+			VERBOSE("warning: OpenGL version of SiftGPU only supports a maximum of %d matches; try switching to CUDA to avoid this limitation",
 				gpu->GetMaxSift());
+			#else
+			VERBOSE("warning: OpenGL version of SiftGPU only supports a maximum of %d matches; matching will be capped to this limit",
+				gpu->GetMaxSift());
+			#endif
 		}
 		DEBUG_EXTRA("SiftGPU matcher initialized: %s mode", gpu->GetLanguage() == SiftMatchGPU::SIFTMATCH_CUDA ? "CUDA" : "GLSL");
 		return true;

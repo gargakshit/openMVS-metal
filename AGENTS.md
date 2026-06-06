@@ -152,7 +152,7 @@ image.Save(fileName);  // saves via OpenCV with correct format
 ### Configuration
 - Build-time config in `ConfigLocal.h` (generated) included in every code file
 - Runtime options via boost::program_options pattern
-- Feature flags like `OpenMVS_USE_CUDA`, `OpenMVS_USE_CERES`, `OpenMVS_HEADLESS_DEBUG`
+- Feature flags like `OpenMVS_USE_CUDA`, `OpenMVS_USE_METAL`, `OpenMVS_USE_CERES`, `OpenMVS_HEADLESS_DEBUG`
 - Each library uses a precompiled header (`Common.h`) for common includes, like Eigen, OpenCV, etc.
 
 ## Viewer Application Specifics
@@ -190,7 +190,7 @@ window.Run(scene) →
 - **OpenCV**: Image processing and I/O
 - **CGAL**: Computational geometry
 - **Boost**: Serialization, program options, containers
-- **CUDA**: GPU acceleration (optional)
+- **CUDA/Metal**: GPU acceleration (optional; Metal covers first-party MVS paths on Apple)
 - **GLFW/OpenGL**: Viewer rendering
 
 ### Cross-Component Communication
@@ -230,7 +230,7 @@ ctest                    # Run all tests
 ## Performance Considerations
 
 - Multi-threading via OpenMP (`#pragma omp parallel`) for simple parallelism and `BS::light_thread_pool` for task-based parallelism.
-- CUDA kernels for GPU acceleration (when enabled)
+- CUDA/Metal kernels for GPU acceleration (when enabled)
 - Memory-mapped files for large datasets
 - Spatial data structures (octrees) for efficient queries
 - Viewer optimizations: frustum culling, render-only-on-change mode

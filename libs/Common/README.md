@@ -197,7 +197,9 @@ libs/Common/
 ├── SML.h/cpp             # Simple Markup Language parser
 ├── Hash.h                # Hash utilities
 ├── Queue.h               # Queue container
-└── UtilCUDA.cpp          # CUDA utilities (optional)
+├── UtilCUDA.cpp          # CUDA utilities (optional)
+├── UtilMetal.mm          # Apple Metal buffers/textures (optional)
+└── UtilGPU.cpp           # Shared GPU backend selector
 ```
 
 ## Dependencies
@@ -207,3 +209,4 @@ libs/Common/
 - **Boost**: Serialization framework
 - **nanoflann**: KD-tree spatial indexing (header-only)
 - **CUDA** (optional): GPU utilities
+- **Metal** (optional): Apple GPU utilities for first-party MVS paths

@@ -414,8 +414,8 @@ graph TD
     B3 -->|no| B5
     B4 --> B5[Load and validate images<br/>OpenMP parallel]
     B5 --> B6[SelectNeighborViews per image<br/>DepthMapsData::SelectViews]
-    B6 --> B7{CUDA available?}
-    B7 -->|yes| B8[PatchMatchCUDA::Init]
+    B6 --> B7{GPU backend available?}
+    B7 -->|yes| B8[PatchMatchCUDA/PatchMatchMetal::Init]
     B7 -->|no| B9[CPU PatchMatch]
     B8 --> B10[Event queue: 2 worker threads]
     B9 --> B10
@@ -457,12 +457,12 @@ graph TD
 - Input: `DepthData` with reference + neighbor images
 - Processing:
   - CPU: `DepthEstimator` iterates pixels in zigzag scan order; for each pixel: random depth/normal initialization; propagation from neighbors; NCC/ZNCC photo-consistency score; sub-pixel refinement
-  - CUDA: `PatchMatchCUDA` runs GPU-parallel random init + checkerboard propagation
+  - CUDA/Metal: `PatchMatchCUDA` or `PatchMatchMetal` runs GPU-parallel random init + checkerboard propagation
   - `InitDepthMap()`: projects sparse point cloud to initialize depth from SFM points
   - `nEstimationGeometricIters` (default 1): geometry-consistent iteration uses neighbor depth maps to constrain
 - Output: `DepthData::depthMap`, `normalMap`, `confMap`
 - Config: `OPTDENSE::nResolutionLevel`, `nMinResolution`, `OPTDENSE::nEstimationGeometricIters`
-- Parallelism: 2 worker threads via event queue; CUDA GPU when available
+- Parallelism: 2 worker threads via event queue; CUDA or Metal GPU when available
 
 **Step 3: Depth Map Filtering**
 
@@ -556,6 +556,7 @@ graph TD
 
 - `MVS::Scene::RefineMesh()` — `libs/MVS/SceneRefine.cpp:1285`
 - `MVS::Scene::RefineMeshCUDA()` — `libs/MVS/SceneRefineCUDA.cpp` (CUDA build only)
+- `MVS::Scene::RefineMeshMetal()` — `libs/MVS/SceneRefineMetal.cpp` (Metal build only)
 
 Called from: `RefineMesh` app (`apps/RefineMesh/RefineMesh.cpp`)
 
@@ -840,8 +841,10 @@ dMin, dMax: float           — depth range from SFM sparse points
 
 | Feature | Flag | Default | Effect |
 |---------|------|---------|--------|
-| CUDA PatchMatch | `_USE_CUDA` + `desiredDeviceID >= 0` | disabled | GPU depth estimation |
-| CUDA Mesh Refine | `_USE_CUDA` | disabled | GPU gradient computation |
+| CUDA PatchMatch | `_USE_CUDA` + `--gpu-backend cuda`/non-Apple `auto` and CUDA device not set to `-2`, `cpu`, or empty | disabled | GPU depth estimation on CUDA |
+| Metal PatchMatch | `_USE_METAL` + `--gpu-backend metal` or `auto` on Apple | enabled on Apple | GPU depth estimation on Metal |
+| CUDA Mesh Refine | `_USE_CUDA` | disabled | GPU gradient computation on CUDA |
+| Metal Mesh Refine | `_USE_METAL` + `--gpu-backend metal` or `auto` on Apple | enabled on Apple | GPU gradient computation on Metal |
 | Ceres BA | `_USE_CERES` | enabled | Non-linear optimization |
 | SiftGPU | `_USE_SIFTGPU` | disabled | GPU SIFT feature extraction |
 | OpenMP | `_USE_OPENMP` | enabled | Multi-threaded image loops |
@@ -872,12 +875,14 @@ dMin, dMax: float           — depth range from SFM sparse points
 | `libs/SFM/KeyframeExtractor.cpp` | Video keyframe selection |
 | `libs/MVS/SceneDensify.cpp` | Dense depth estimation |
 | `libs/MVS/DepthMap.cpp` | CPU PatchMatch |
-| `libs/MVS/PatchMatchCUDA.cu` | GPU PatchMatch |
+| `libs/MVS/PatchMatchCUDA.cu` | CUDA GPU PatchMatch |
+| `libs/MVS/PatchMatchMetal.*` | Metal GPU PatchMatch |
 | `libs/MVS/SemiGlobalMatcher.cpp` | SGM depth refinement |
 | `libs/MVS/SceneReconstruct.cpp` | Mesh reconstruction |
 | `libs/MVS/Mesh.cpp` | Mesh operations |
 | `libs/MVS/SceneRefine.cpp` | CPU mesh refinement |
-| `libs/MVS/SceneRefineCUDA.cu` | GPU mesh refinement |
+| `libs/MVS/SceneRefineCUDA.cu` | CUDA GPU mesh refinement |
+| `libs/MVS/SceneRefineMetal.*` | Metal GPU mesh refinement |
 | `libs/MVS/SceneTexture.cpp` | Texture mapping |
 | `libs/MVS/AtlasPacker.cpp` | Atlas bin-packing |
 | `libs/MVS/SceneQuality.cpp` | Quality metrics |

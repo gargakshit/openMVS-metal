@@ -85,7 +85,7 @@ struct SFM_API MatchConfig
 	bool descriptorsAreBinary = true;
 
 	bool viewGraphCalibrationEnabled = true;  // Enable view graph calibration
-	bool useCUDA = true; // use CUDA for SiftMatchGPU if available (otherwise OpenGL)
+	bool useCUDA = true; // prefer CUDA for SiftMatchGPU only when compiled (otherwise OpenGL)
 
 	// Pairs weighting parameters
 	PairsWeightingConfig weightingCfg;

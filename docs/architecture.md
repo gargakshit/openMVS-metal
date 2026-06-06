@@ -121,9 +121,9 @@ File count: ~30 `.h`/`.cpp` files
 
 Full MVS pipeline from sparse SFM output to textured mesh.
 
-Key components: Dense depth estimation (CPU PatchMatch + CUDA PatchMatchCUDA + SGM), depth fusion (multi-view consistency), CGAL mesh reconstruction, mesh refinement (CPU + CUDA), texture mapping (LBP face selection + atlas packing + seam leveling), quality assessment, DMapCache disk caching.
+Key components: Dense depth estimation (CPU PatchMatch + CUDA/Metal PatchMatch + SGM), depth fusion (multi-view consistency), CGAL mesh reconstruction, mesh refinement (CPU + CUDA/Metal), texture mapping (LBP face selection + atlas packing + seam leveling), quality assessment, DMapCache disk caching.
 
-File count: ~20 `.h`/`.cpp`/`.cu` files (plus `CUDA/` subdirectory)
+File count: ~20 `.h`/`.cpp`/`.cu`/`.mm`/`.metal` files (plus `CUDA/` and `Metal/` subdirectories)
 
 ---
 
@@ -347,7 +347,8 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `OpenMVS_USE_CUDA` | Enable CUDA GPU acceleration | Off (requires CUDA Toolkit) |
+| `OpenMVS_USE_CUDA` | Enable CUDA GPU acceleration | On by option, force-disabled on Apple; requires CUDA Toolkit |
+| `OpenMVS_USE_METAL` | Enable Apple Metal GPU acceleration for first-party MVS paths | On for Apple, off elsewhere |
 | `OpenMVS_USE_CERES` | Enable Ceres Solver for BA | On |
 | `OpenMVS_USE_SIFTGPU` | Enable SiftGPU feature extraction | Off |
 | `OpenMVS_USE_OPENMP` | Enable OpenMP parallelism | On |
@@ -376,6 +377,7 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 | ImGui | 1.9+ | Immediate-mode GUI with docking | Viewer |
 | SuiteSparse | optional | Fast sparse linear solvers (CHOLMOD) | Math |
 | CUDA Toolkit | 11+ | GPU acceleration (PatchMatch, mesh refine, positioning) | MVS, SFM |
+| Metal framework | macOS | Apple GPU acceleration for first-party MVS PatchMatch and mesh refinement | Common, MVS |
 | SiftGPU | optional | GPU SIFT feature extraction | SFM |
 | libpng | optional | PNG image format | IO |
 | libjpeg | optional | JPEG image format | IO |
@@ -392,20 +394,24 @@ Executables land in `make/bin/Debug/` or `make/bin/Release/`.
 
 ## GPU Acceleration
 
-OpenMVS has optional GPU acceleration at six points in the pipeline. All are disabled by default and require the `_USE_CUDA` build flag (except SiftGPU which requires `_USE_SIFTGPU`).
+OpenMVS has optional GPU acceleration through CUDA on non-Apple platforms and Apple Metal for first-party MVS dense depth and mesh refinement. Ceres GPU solvers and SiftGPU CUDA remain CUDA-specific; Metal builds use the CPU Ceres solver path and SiftGPU's non-CUDA path where available.
 
 | Module | File | What It Accelerates |
 |--------|------|---------------------|
-| PatchMatchCUDA | `libs/MVS/PatchMatchCUDA.cu` | Dense depth estimation via GPU-parallel PatchMatch (AMHMVS) with checkerboard propagation |
-| SceneRefineCUDA | `libs/MVS/SceneRefineCUDA.cu` | Mesh refinement — GPU-parallel face projection and photometric gradient computation |
-| GlobalPositioning GPU | `libs/SFM/GlobalPositioning.cpp` | Joint camera + point position optimization for scenes ≥ 50 images (GLOMAP-style GPU solver) |
+| PatchMatch CUDA/Metal | `libs/MVS/PatchMatchCUDA.cu`, `libs/MVS/PatchMatchMetal.*` | Dense depth estimation via GPU-parallel PatchMatch (AMHMVS) with checkerboard propagation |
+| SceneRefine CUDA/Metal | `libs/MVS/SceneRefineCUDA.cu`, `libs/MVS/SceneRefineMetal.*` | Mesh refinement — GPU-parallel face projection and photometric gradient computation |
+| GlobalPositioning GPU | `libs/SFM/GlobalPositioning.cpp` | Joint camera + point position optimization for scenes ≥ 50 images via Ceres CUDA when available; Metal falls back to CPU solvers |
 | SiftGPU | External library | SIFT feature extraction on GPU via CUDA or OpenGL backend |
-| Common CUDA utils | `libs/Common/UtilCUDA.cpp` | Device management, memory transfer, capability detection |
-| MVS Camera CUDA | `libs/MVS/CUDA/Camera.h` | GPU-side camera projection for depth estimation kernels |
+| Common CUDA/Metal utils | `libs/Common/UtilCUDA.cpp`, `libs/Common/UtilMetal.mm` | Device management, memory transfer, capability detection |
+| MVS Camera CUDA/Metal | `libs/MVS/CUDA/Camera.h`, `libs/MVS/Metal/Camera.h` | GPU-side camera projection for depth estimation kernels |
 
 CUDA requirements:
 - Minimum compute capability: 5.0 (Maxwell)
-- Device selection: `desiredDeviceID` parameter (-1 disables CUDA)
+- Device selection: `desiredDeviceIDs`/`--cuda-device`; `-1` selects the best CUDA GPU, while `-2`, `cpu`, or an empty value disables CUDA work.
+
+Metal requirements:
+- Apple platform with the Metal framework and default Metal device
+- Backend selection through `--gpu-backend auto|cpu|cuda|metal` in backend-capable MVS apps
 
 ---
 

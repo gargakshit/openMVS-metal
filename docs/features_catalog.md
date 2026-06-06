@@ -11,7 +11,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **SFM modules:** ~30 headers in `libs/SFM/`
 - **MVS modules:** ~20 headers in `libs/MVS/`
 - **Common framework files:** ~40 headers in `libs/Common/`
-- **CUDA-enabled modules:** 4 (PatchMatchCUDA, SceneRefineCUDA, GlobalPositioning GPU, SiftGPU)
+- **GPU-enabled modules:** CUDA covers PatchMatchCUDA, SceneRefineCUDA, GlobalPositioning GPU, and SiftGPU CUDA; Apple Metal covers first-party MVS PatchMatch and SceneRefine paths.
 - **Interface formats:** COLMAP, OpenMVG, Metashape, MVSNet, Polycam
 
 ---
@@ -407,7 +407,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:** Pipeline orchestration for all MVS stages; `Load()`/`Save()` for `.mvs` binary format (Boost serialization); `SelectNeighborViews()` for geometric view scoring; `SampleMeshWithVisibility()` for depth map initialization from mesh
 - **Key Data:** `PlatformArr platforms`, `ImageArr images`, `PointCloud pointcloud`, `Mesh mesh`, `OBB3f obb`, `Matrix4x4 transform`, `unsigned nCalibratedImages`, `unsigned nMaxThreads`
 - **Configuration:** All downstream pipeline configurations (OPTDENSE, etc.)
-- **GPU Support:** Indirect — delegates to PatchMatchCUDA and SceneRefineCUDA
+- **GPU Support:** Indirect — delegates to PatchMatchCUDA/PatchMatchMetal and SceneRefineCUDA/SceneRefineMetal
 - **Threading:** OpenMP + `BS::light_thread_pool`; configurable `nMaxThreads`
 - **Dependencies:** All MVS sub-modules, Boost (serialization)
 
@@ -482,15 +482,15 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **Algorithms:**
   - `Scene::DenseReconstruction()`: full pipeline — view selection, depth estimation, filtering, fusion
   - `DepthMapsData::SelectViews()`: scores candidate neighbors by angle, scale, shared visible points; keeps up to 12 neighbors
-  - `EstimateDepthMap()`: CPU PatchMatch or GPU PatchMatchCUDA dispatch
+  - `EstimateDepthMap()`: CPU PatchMatch or GPU PatchMatchCUDA/PatchMatchMetal dispatch
   - `RemoveSmallSegments()`, `GapInterpolation()`: depth map post-processing
   - **Fusion modes:** `FUSE_FILTER` (default, multi-view consistency), `FUSE_NOFILTER` (simple merge), `FUSE_DENSEFILTER` (denser)
   - Optional `EstimatePointColors()` and `EstimatePointNormals()`
   - Optional depth map deletion after fusion
 - **Configuration:** `OPTDENSE` namespace — `nResolutionLevel`, `nMinResolution`, `nEstimationGeometricIters` (1), `fDepthDiffThreshold`, `nFusionMode`
-- **GPU Support:** Yes (PatchMatchCUDA)
+- **GPU Support:** Yes (PatchMatchCUDA on CUDA builds, PatchMatchMetal on Apple Metal builds)
 - **Threading:** 2 worker threads via EventQueue; OpenMP for image loading
-- **Dependencies:** OpenCV, nanoflann, CUDA (optional)
+- **Dependencies:** OpenCV, nanoflann, CUDA or Metal (optional)
 
 ### Depth Map (CPU PatchMatch)
 
@@ -504,7 +504,7 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - `InitDepthMap()`: projects SFM sparse points to initialize depth range
   - `nEstimationGeometricIters`: geometry-consistent iteration using neighbor depth maps
 - **Key Data:** `DepthData` — `ViewDataArr images`, `DepthMap depthMap`, `NormalMap normalMap`, `ConfidenceMap confMap`, `float dMin/dMax`
-- **GPU Support:** No (CPU only; GPU variant is PatchMatchCUDA)
+- **GPU Support:** No inside the CPU estimator itself; GPU variants are PatchMatchCUDA and PatchMatchMetal
 - **Threading:** 2 worker threads via EventQueue
 - **Dependencies:** OpenCV, Common
 
@@ -519,8 +519,16 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
   - AMHMVS algorithm
   - Requires CUDA compute capability 5.0+
 - **GPU Support:** Yes (CUDA required)
-- **Threading:** GPU parallelism; configurable `desiredDeviceID`
+- **Threading:** GPU parallelism; configurable CUDA device IDs (`-1` best GPU, `-2`/`cpu`/empty disables CUDA work)
 - **Dependencies:** CUDA Toolkit, Common
+
+### PatchMatch Metal (GPU Depth Estimation)
+
+- **Files:** `libs/MVS/PatchMatchMetal.h`, `libs/MVS/PatchMatchMetal.mm`, `libs/MVS/PatchMatchMetal.metal`
+- **Algorithms:** Metal translation of the first-party PatchMatch GPU path with initialization, checkerboard propagation/refinement, geometric consistency, low-depth priors, selected-view masks, and plane filtering
+- **GPU Support:** Yes (Apple Metal required, `_USE_METAL` flag)
+- **Threading:** GPU parallelism; worker instance count follows the shared PatchMatch GPU instance option
+- **Dependencies:** Metal framework, Common
 
 ### Semi-Global Matcher
 
@@ -582,6 +590,14 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 - **GPU Support:** Yes (CUDA required, `_USE_CUDA` flag)
 - **Threading:** GPU parallelism
 - **Dependencies:** CUDA Toolkit, Common
+
+### Scene Refine Metal (GPU)
+
+- **Files:** `libs/MVS/SceneRefineMetal.cpp`, `libs/MVS/SceneRefineMetal.mm`, `libs/MVS/SceneRefineMetal.metal`, `libs/MVS/SceneRefineMetal.h`
+- **Algorithms:** Metal translation of the first-party mesh-refinement GPU path, including face normals, projection/cross-check maps, image statistics, ZNCC/DZNCC, warping, photometric gradients, smoothness gradients, and gradient combination
+- **GPU Support:** Yes (Apple Metal required, `_USE_METAL` flag)
+- **Threading:** GPU parallelism with command-buffer fusion and cached Metal pipelines
+- **Dependencies:** Metal framework, Common
 
 ---
 
@@ -795,10 +811,10 @@ OpenMVS is a comprehensive photogrammetry library implementing a complete pipeli
 | SFM Global Methods | 4 | Yes (GlobalPositioning) |
 | SFM Keyframe | 1 | No |
 | SFM Import/Export | 3 | No |
-| MVS Core | 6 | Yes (Camera CUDA) |
-| MVS Dense Depth | 4 | Yes (PatchMatchCUDA) |
+| MVS Core | 6 | Yes (Camera CUDA/Metal helpers) |
+| MVS Dense Depth | 4 | Yes (PatchMatchCUDA/PatchMatchMetal) |
 | MVS Mesh Reconstruction | 1 | No |
-| MVS Mesh Refinement | 2 | Yes (SceneRefineCUDA) |
+| MVS Mesh Refinement | 2 | Yes (SceneRefineCUDA/SceneRefineMetal) |
 | MVS Texture Mapping | 2 | No |
 | MVS Quality | 1 | No |
 | Common Framework | 8 | Yes (UtilCUDA) |

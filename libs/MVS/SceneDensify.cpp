@@ -33,7 +33,11 @@
 #include "Scene.h"
 #include "SceneDensify.h"
 #include "PatchMatchCUDA.h"
+#include "PatchMatchMetal.h"
 #include "DMapCache.h"
+#include "../Common/UtilGPU.h"
+
+#include <cstdio>
 
 using namespace MVS;
 
@@ -139,6 +143,10 @@ DepthMapsData::DepthMapsData(Scene& _scene)
 	, pmCUDANextIdx((Thread::safe_t)-1)
 	, pmCUDAEpoch(0)
 	#endif // _USE_CUDA
+	#ifdef _USE_METAL
+	, pmMetalNextIdx((Thread::safe_t)-1)
+	, pmMetalEpoch(0)
+	#endif // _USE_METAL
 {
 } // constructor
 
@@ -179,6 +187,40 @@ void DepthMapsData::ReinitCudaPoolForGeom()
 	Thread::safeInc(pmCUDAEpoch);
 }
 #endif // _USE_CUDA
+
+#ifdef _USE_METAL
+bool DepthMapsData::AllocateMetalPool(unsigned poolSize)
+{
+	ASSERT(pmMetalPool.empty());
+	if (poolSize == 0)
+		poolSize = 1;
+	auto probe = std::make_unique<MVS::METAL::PatchMatch>();
+	if (!probe->IsAvailable()) {
+		VERBOSE("Metal PatchMatch unavailable: no default Metal device");
+		return false;
+	}
+	probe->Init(false);
+	pmMetalPool.reserve(poolSize);
+	pmMetalPool.emplace_back(std::move(probe));
+	for (unsigned k = 1; k < poolSize; ++k) {
+		auto pm = std::make_unique<MVS::METAL::PatchMatch>();
+		pm->Init(false);
+		pmMetalPool.emplace_back(std::move(pm));
+	}
+	pmMetalNextIdx = (Thread::safe_t)-1;
+	return true;
+}
+
+void DepthMapsData::ReinitMetalPoolForGeom()
+{
+	for (auto& pm : pmMetalPool) {
+		pm->Release();
+		pm->Init(true);
+	}
+	pmMetalNextIdx = (Thread::safe_t)-1;
+	Thread::safeInc(pmMetalEpoch);
+}
+#endif // _USE_METAL
 /*----------------------------------------------------------------*/
 
 // compute visibility for the reference image (the first image in "images")
@@ -547,6 +589,22 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 //  - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
+	#ifdef _USE_METAL
+	if (!pmMetalPool.empty()) {
+		static thread_local int s_slot = -1;
+		static thread_local Thread::safe_t s_epoch = (Thread::safe_t)-1;
+		if (s_slot < 0 || s_epoch != pmMetalEpoch) {
+			s_slot = (int)(Thread::safeInc(pmMetalNextIdx) % (Thread::safe_t)pmMetalPool.size());
+			s_epoch = pmMetalEpoch;
+		}
+		if (pmMetalPool[s_slot]->EstimateDepthMap(arrDepthData[idxImage]))
+			return true;
+		VERBOSE("error: Metal PatchMatch failed for image %u; refusing CPU fallback for a selected Metal depth-map backend",
+			arrDepthData[idxImage].GetView().GetID());
+		return false;
+	}
+	#endif // _USE_METAL
+
 	#ifdef _USE_CUDA
 	if (!pmCUDAPool.empty()) {
 		// claim a pool slot for this worker thread; epoch invalidates the claim
@@ -2146,11 +2204,44 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 	}
 
+	const SEACAVE::GPU::Backend requestedBackend(SEACAVE::GPU::ParseBackend(SEACAVE::GPU::desiredBackend));
+	const SEACAVE::GPU::Backend autoBackend(SEACAVE::GPU::AutoBackend());
+	SEACAVE::GPU::Backend selectedDepthBackend(SEACAVE::GPU::Backend::CPU);
+	#ifdef _USE_METAL
+	if ((requestedBackend == SEACAVE::GPU::Backend::METAL ||
+		 (requestedBackend == SEACAVE::GPU::Backend::AUTO && autoBackend == SEACAVE::GPU::Backend::METAL)) &&
+		data.nFusionMode >= 0) {
+		const unsigned poolSize = (nMaxThreads > 1)
+			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
+			: 1u;
+		if (data.depthMaps.AllocateMetalPool(poolSize)) {
+			data.sem.Clear(poolSize);
+			data.nDenseWorkers = poolSize;
+			selectedDepthBackend = SEACAVE::GPU::Backend::METAL;
+		} else if (requestedBackend == SEACAVE::GPU::Backend::METAL) {
+			VERBOSE("error: failed to allocate Metal PatchMatch pool; refusing CPU fallback for a requested Metal depth-map backend");
+			return false;
+		}
+	}
+	#else
+	if (requestedBackend == SEACAVE::GPU::Backend::METAL)
+		VERBOSE("warning: Metal backend requested but OpenMVS was built without Metal; using CPU depth-map estimation");
+	#endif // _USE_METAL
+
 	#ifdef _USE_CUDA
+	#ifdef _USE_METAL
+	const bool metalPatchMatchSelected(!data.depthMaps.pmMetalPool.empty());
+	#else
+	const bool metalPatchMatchSelected(false);
+	#endif
 	// One PatchMatch instance per worker thread; host-side prep (image upload,
 	// depth-prior packing, result unpack) then parallelizes while the kernel
 	// launches stay GPU-side-serialized via the cudaEvent_t chain.
-	if (!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
+	if ((requestedBackend == SEACAVE::GPU::Backend::CUDA ||
+		 (requestedBackend == SEACAVE::GPU::Backend::AUTO &&
+		  (autoBackend == SEACAVE::GPU::Backend::CUDA || autoBackend == SEACAVE::GPU::Backend::METAL))) &&
+		!metalPatchMatchSelected &&
+		!SEACAVE::CUDA::isCpuRequested(SEACAVE::CUDA::desiredDeviceIDs) && data.nFusionMode >= 0) {
 		const unsigned poolSize = (nMaxThreads > 1)
 			? CLAMP(OPTDENSE::nPatchMatchCUDAInstances, 1u, nMaxThreads)
 			: 1u;
@@ -2159,9 +2250,15 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			// EstimateDepthMap concurrently
 			data.sem.Clear(poolSize);
 			data.nDenseWorkers = poolSize;
+			selectedDepthBackend = SEACAVE::GPU::Backend::CUDA;
 		}
 	}
+	#else
+	if (requestedBackend == SEACAVE::GPU::Backend::CUDA)
+		VERBOSE("warning: CUDA backend requested but OpenMVS was built without CUDA; using CPU depth-map estimation");
 	#endif // _USE_CUDA
+	SEACAVE::GPU::SetLastSelectedBackend(selectedDepthBackend);
+	std::fprintf(stderr, "OpenMVS backend selected: DensifyPointCloud %s\n", SEACAVE::GPU::ToString(selectedDepthBackend));
 
 	// initialize the queue of images to be processed
 	const int nOptimize(OPTDENSE::nOptimize);
@@ -2195,6 +2292,10 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		if (!data.depthMaps.pmCUDAPool.empty() && OPTDENSE::nEstimationGeometricIters)
 			data.depthMaps.ReinitCudaPoolForGeom();
 		#endif // _USE_CUDA
+		#ifdef _USE_METAL
+		if (!data.depthMaps.pmMetalPool.empty() && OPTDENSE::nEstimationGeometricIters)
+			data.depthMaps.ReinitMetalPoolForGeom();
+		#endif // _USE_METAL
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
@@ -2345,9 +2446,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
 			// extract depth map
 			data.sem.Wait();
+			bool depthMapEstimated = true;
 			if (data.nFusionMode >= 0) {
 				// extract depth-map using Patch-Match algorithm
-				data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
+				depthMapEstimated = data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
 			} else {
 				// extract disparity-maps using SGM algorithm
 				if (data.nFusionMode == -1) {
@@ -2363,6 +2465,10 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				}
 			}
 			data.sem.Signal();
+			if (!depthMapEstimated) {
+				VERBOSE("error: failed to estimate depth-map for image %u", data.scene.images[data.images[evtImage.idxImage]].ID);
+				exit(EXIT_FAILURE);
+			}
 			if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 				// optimize depth-map
 				data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));

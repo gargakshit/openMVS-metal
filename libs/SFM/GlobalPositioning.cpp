@@ -391,7 +391,7 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 		}
 	}
 
-	// Configure GPU/CUDA support if available
+	// Configure GPU solver support when a compiled backend is available.
 	#ifdef _USE_CUDA
 	if (options.useGpu && scene.images.size() >= options.minNumImagesGpuSolver) {
 		#if (CERES_VERSION_MAJOR >= 3 || (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2))
@@ -415,7 +415,10 @@ void GlobalPositioner::ConfigureProblem(Scene& scene)
 		VERBOSE("warning: GPU solver requested but Ceres (version < 2.2) was built without CUDA; using CPU solvers instead.");
 		#endif
 	}
-	#endif // _USE_CUDA
+	#elif defined(_USE_METAL)
+	if (options.useGpu && scene.images.size() >= options.minNumImagesGpuSolver)
+		VERBOSE("warning: GPU solver requested but Ceres has no Metal backend; using CPU solvers instead.");
+	#endif // _USE_CUDA / _USE_METAL
 
 	// Set up the options for the solver
 	if (!scene.tracks.empty()) {

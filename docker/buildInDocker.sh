@@ -36,7 +36,7 @@ done
 if [[ "$CUDA" == "1" ]]; then
     echo "Building with CUDA support"
     EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
-    OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
+    OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DOpenMVS_REQUIRE_CUDA=ON -DCUDAToolkit_ROOT=/usr/local/cuda -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs -DCMAKE_CUDA_ARCHITECTURES=all-major -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
 else
     echo "Building without CUDA support"
     EIGEN_BUILD_ARG=""

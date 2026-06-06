@@ -49,6 +49,11 @@ namespace CUDA {
 class PatchMatch;
 } // namespace CUDA
 #endif // _USE_CUDA
+#ifdef _USE_METAL
+namespace METAL {
+class PatchMatch;
+} // namespace METAL
+#endif // _USE_METAL
 
 // structure used to compute all depth-maps
 class MVS_API DepthMapsData
@@ -77,6 +82,10 @@ public:
 	// re-claim slots cleanly even if the OS reuses them across the boundary.
 	void ReinitCudaPoolForGeom();
 	#endif // _USE_CUDA
+	#ifdef _USE_METAL
+	bool AllocateMetalPool(unsigned poolSize);
+	void ReinitMetalPoolForGeom();
+	#endif // _USE_METAL
 
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);
@@ -117,6 +126,13 @@ public:
 	mutable volatile Thread::safe_t pmCUDANextIdx;
 	mutable volatile Thread::safe_t pmCUDAEpoch;
 	#endif // _USE_CUDA
+	#ifdef _USE_METAL
+	// One PatchMatch instance per worker thread, mirroring the CUDA pool
+	// behavior so concurrent dense workers do not share host-side backend state.
+	std::vector<std::unique_ptr<MVS::METAL::PatchMatch>> pmMetalPool;
+	mutable volatile Thread::safe_t pmMetalNextIdx;
+	mutable volatile Thread::safe_t pmMetalEpoch;
+	#endif // _USE_METAL
 };
 /*----------------------------------------------------------------*/
 

@@ -47,7 +47,7 @@ public:
 		unsigned maxResolution{2560};
 		unsigned minResolution{640};
 		unsigned subResolutionLevels{2};
-		#ifdef _USE_CUDA
+		#if defined(_USE_CUDA) || defined(_USE_METAL)
 		unsigned numViews{8};
 		#else
 		unsigned numViews{5};
@@ -55,11 +55,12 @@ public:
 		unsigned minViews{3};
 		unsigned minViewsTrust{2};
 		unsigned minViewsFuse{2};
-		#ifdef _USE_CUDA
+		#if defined(_USE_CUDA) || defined(_USE_METAL)
 		unsigned estimationIters{4};
 		#else
 		unsigned estimationIters{3};
 		#endif
+		String gpuBackend{"auto"};
 		unsigned geometricIters{2};
 		unsigned fuseFilter{2};
 		bool estimateColors{true};

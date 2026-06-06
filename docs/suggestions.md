@@ -93,9 +93,9 @@ The following five suggestions offer the highest impact relative to implementati
 ### A3. Learned Monocular Depth Priors (DepthAnything V2, Metric3D, MoGe)
 
 - **What is missing:** Dense depth estimation uses only multi-view photometric matching (NCC/WZNCC). No monocular depth priors exist for textureless or reflective regions.
-- **Why it matters:** DepthAnything V2 (Yang et al., 2024) provides robust relative depth as initialization or regularization for PatchMatch. The existing `PatchMatchCUDA` already has a `lowDepths` prior mechanism (blends depth-prior cost in textureless regions) — monocular depth would be a vastly better prior than sparse point interpolation.
+- **Why it matters:** DepthAnything V2 (Yang et al., 2024) provides robust relative depth as initialization or regularization for PatchMatch. The first-party CUDA/Metal PatchMatch paths already have a `lowDepths` prior mechanism (blends depth-prior cost in textureless regions) — monocular depth would be a vastly better prior than sparse point interpolation.
 - **State-of-the-art references:** DepthAnything V2 (2024); Metric3D v2 (Hu et al., 2024); MoGe (Wang et al., 2024)
-- **Integration point:** Feed as `lowResDepthMap` in `DepthEstimator` or `lowDepths` in `PatchMatchCUDA.inl`. Align scale using sparse SFM points. The existing `ViewData::depthMap` field in `DepthData` can store the prior.
+- **Integration point:** Feed as `lowResDepthMap` in `DepthEstimator` or `lowDepths` in the CUDA/Metal PatchMatch host paths. Align scale using sparse SFM points. The existing `ViewData::depthMap` field in `DepthData` can store the prior.
 - **Complexity:** Medium
 - **Priority:** High
 
@@ -130,7 +130,7 @@ The following five suggestions offer the highest impact relative to implementati
 
 - **What is missing:** No ability to incorporate LiDAR point clouds as depth constraints.
 - **Why it matters:** Many platforms (drones, autonomous vehicles) provide sparse but metric depth from LiDAR.
-- **Integration point:** Use LiDAR points as prior in `PatchMatchCUDA`'s existing `lowDepths` mechanism.
+- **Integration point:** Use LiDAR points as prior in the CUDA/Metal PatchMatch `lowDepths` mechanism.
 - **Complexity:** Medium
 - **Priority:** Medium
 

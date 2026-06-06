@@ -113,5 +113,5 @@ Custom `std::hash` for: `std::pair`, `std::tuple`, `cv::Point_<T>`, `cv::Point3_
 
 ## Build & Dependencies
 - **Precompiled header**: `Common.h` (includes Eigen3, OpenCV, Boost, nanoflann)
-- **External deps**: Eigen3 (linear algebra), OpenCV (image processing), Boost (serialization), nanoflann (KD-trees), optional CUDA
+- **External deps**: Eigen3 (linear algebra), OpenCV (image processing), Boost (serialization), nanoflann (KD-trees), optional CUDA/Metal
 - All other OpenMVS libs link against Common

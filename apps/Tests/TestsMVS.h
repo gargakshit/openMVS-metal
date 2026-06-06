@@ -38,7 +38,17 @@
 namespace MVS {
 
 // test MVS stages on a small sample dataset
-bool PipelineTest(bool forceCPU = false, bool verbose = false);
+bool PipelineTest(bool forceCPU = false, bool verbose = false, const char* expectedBackend = nullptr);
 /*----------------------------------------------------------------*/
+
+#ifdef _USE_METAL
+// compare CPU and Metal dense reconstruction on the small sample dataset
+bool DenseReconstructionMetalParityTest();
+/*----------------------------------------------------------------*/
+
+// test Metal mesh refinement on the small sample dataset
+bool RefineMeshMetalSampleTest();
+/*----------------------------------------------------------------*/
+#endif
 
 } // namespace MVS

@@ -34,6 +34,12 @@ OPTION(OpenMVS_USE_BREAKPAD "Enable BreakPad library" ON)
 OPTION(OpenMVS_USE_PYTHON "Enable Python library bindings" ON)
 OPTION(OpenMVS_USE_CERES "Enable CERES optimization library" OFF)
 OPTION(OpenMVS_USE_CUDA "Enable CUDA library" ON)
+OPTION(OpenMVS_REQUIRE_CUDA "Fail configuration if CUDA support is requested but unavailable" OFF)
+IF(APPLE)
+	OPTION(OpenMVS_USE_METAL "Enable Apple Metal library" ON)
+ELSE()
+	OPTION(OpenMVS_USE_METAL "Enable Apple Metal library" OFF)
+ENDIF()
 OPTION(OpenMVS_USE_SIFTGPU "Enable SIFTGPU library" ON)
 OPTION(OpenMVS_USE_FAST_FLOAT2INT "Use an optimized code to convert real numbers to int" OFF)
 OPTION(OpenMVS_USE_FAST_INVSQRT "Use an optimized code to compute the inverse square root (slower in fact on modern compilers)" OFF)
@@ -46,8 +52,11 @@ OPTION(OpenMVS_HEADLESS_DEBUG "Print asserts to stderr and continue; do not redi
 
 # Disable CUDA on MacOS
 IF(APPLE)
-	SET(OpenMVS_USE_CUDA OFF)
+	SET(OpenMVS_USE_CUDA OFF CACHE BOOL "Enable CUDA library" FORCE)
 	MESSAGE(STATUS "Disabling CUDA on MacOS")
+ENDIF()
+IF(OpenMVS_REQUIRE_CUDA AND NOT OpenMVS_USE_CUDA)
+	MESSAGE(FATAL_ERROR "OpenMVS_REQUIRE_CUDA=ON requires OpenMVS_USE_CUDA=ON on a non-Apple CUDA-capable platform.")
 ENDIF()
 
 # Load automatically VCPKG toolchain if available
@@ -90,6 +99,11 @@ ENDIF()
 #   as ${OpenMVS_SOURCE_DIR} and to the root binary directory as
 #   ${OpenMVS_BINARY_DIR}.
 PROJECT(OpenMVS LANGUAGES CXX)
+
+IF(OpenMVS_USE_METAL AND NOT APPLE)
+	MESSAGE(WARNING "OpenMVS_USE_METAL is only supported on Apple platforms; disabling it.")
+	SET(OpenMVS_USE_METAL OFF CACHE BOOL "Enable Apple Metal library" FORCE)
+ENDIF()
 
 SET(OpenMVS_MAJOR_VERSION 2)
 SET(OpenMVS_MINOR_VERSION 4)
@@ -279,8 +293,22 @@ if(OpenMVS_USE_CUDA)
 		SET(_USE_CUDA TRUE)
 		MESSAGE(STATUS "Found CUDA: " ${CMAKE_CUDA_COMPILER_VERSION} " with GPU arch: " ${CMAKE_CUDA_ARCHITECTURES})
 	else()
+		if(OpenMVS_REQUIRE_CUDA)
+			MESSAGE(FATAL_ERROR "OpenMVS_REQUIRE_CUDA=ON but no CUDA compiler was found. Set CUDA paths or disable OpenMVS_REQUIRE_CUDA.")
+		endif()
 		MESSAGE(STATUS "Can't find CUDA. Continuing without it.")
 	endif()
+endif()
+
+if(OpenMVS_USE_METAL)
+	ENABLE_LANGUAGE(OBJCXX)
+	SET(CMAKE_OBJCXX_STANDARD 17)
+	SET(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+	FIND_LIBRARY(FOUNDATION_LIBRARY Foundation REQUIRED)
+	FIND_LIBRARY(METAL_LIBRARY Metal REQUIRED)
+	LIST(APPEND OpenMVS_EXTRA_LIBS ${FOUNDATION_LIBRARY} ${METAL_LIBRARY})
+	SET(_USE_METAL TRUE)
+	MESSAGE(STATUS "Found Metal framework")
 endif()
 
 if(OpenMVS_USE_BREAKPAD)
@@ -306,7 +334,7 @@ if(OpenMVS_USE_PYTHON)
 	endif()
 endif()
 
-FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options system serialization exception OPTIONAL_COMPONENTS ${Boost_EXTRA_COMPONENTS})
+FIND_PACKAGE(Boost REQUIRED COMPONENTS iostreams program_options serialization exception OPTIONAL_COMPONENTS system ${Boost_EXTRA_COMPONENTS})
 if(Boost_FOUND)
 	ADD_DEFINITIONS(${Boost_DEFINITIONS})
 	LIST(APPEND OpenMVS_EXTRA_LIBS ${Boost_LIBRARIES})
@@ -372,7 +400,169 @@ if (OpenMVS_ENABLE_TESTS)
 	# define tests
 	ADD_TEST(NAME CommonUnitTests COMMAND $<TARGET_FILE:Tests> "0")
 	ADD_TEST(NAME SFMPipelineTest COMMAND $<TARGET_FILE:Tests> "1")
-	ADD_TEST(NAME MVSPipelineTest COMMAND $<TARGET_FILE:Tests> "2")
+	ADD_TEST(NAME MVSPipelineTest COMMAND $<TARGET_FILE:Tests> "2" "0" "1" "cpu")
+	SET_TESTS_PROPERTIES(MVSPipelineTest PROPERTIES RESOURCE_LOCK OpenMVSMVSTestData)
+	ADD_TEST(NAME MVSMetalCudaSurfaceAuditTest
+		COMMAND ${CMAKE_COMMAND}
+			-DTEST_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+			-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMetalCudaSurfaceAudit.cmake
+	)
+	ADD_TEST(NAME SecondaryCudaSurfaceAuditTest
+		COMMAND ${CMAKE_COMMAND}
+			-DTEST_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+			-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunSecondaryCudaSurfaceAudit.cmake
+	)
+	if(UNIX)
+		ADD_TEST(NAME CudaVerifierSelfTest
+			COMMAND ${CMAKE_COMMAND}
+				-DTEST_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+				-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunCudaVerifierSelfTest.cmake
+		)
+		ADD_TEST(NAME CudaVerifierEarlyFailureSmokeTest
+			COMMAND ${CMAKE_COMMAND}
+				-DTEST_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+				-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/cuda-verifier-early-failure-smoke
+				-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunCudaVerifierEarlyFailureSmoke.cmake
+		)
+	endif()
+	if(_USE_METAL)
+		ADD_TEST(NAME MVSPipelineMetalTest COMMAND $<TARGET_FILE:Tests> "2" "0" "0" "metal")
+		SET_TESTS_PROPERTIES(MVSPipelineMetalTest PROPERTIES RESOURCE_LOCK OpenMVSMVSTestData)
+		ADD_TEST(NAME MVSInProcessCpuMetalSpeedTest
+			COMMAND ${CMAKE_COMMAND}
+				-DTESTS_EXE=$<TARGET_FILE:Tests>
+				-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}
+				-DTEST_REFERENCE_BACKEND=cpu
+				-DTEST_CANDIDATE_BACKEND=metal
+				-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMVSInProcessBackendSpeed.cmake
+		)
+		SET_TESTS_PROPERTIES(MVSInProcessCpuMetalSpeedTest PROPERTIES TIMEOUT 1200 RESOURCE_LOCK OpenMVSMVSTestData)
+		ADD_TEST(NAME MetalRuntimeSmoke COMMAND $<TARGET_FILE:Tests> "3")
+		ADD_TEST(NAME MVSRefineMeshMetalTest COMMAND $<TARGET_FILE:Tests> "4")
+		SET_TESTS_PROPERTIES(MVSRefineMeshMetalTest PROPERTIES RESOURCE_LOCK OpenMVSMVSTestData)
+		ADD_TEST(NAME MVSDenseMetalParityTest COMMAND $<TARGET_FILE:Tests> "5")
+		SET_TESTS_PROPERTIES(MVSDenseMetalParityTest PROPERTIES RESOURCE_LOCK OpenMVSMVSTestData)
+		ADD_TEST(NAME SceneRefineMetalShaderCompile
+			COMMAND xcrun -sdk macosx metal -c
+				${CMAKE_SOURCE_DIR}/libs/MVS/SceneRefineMetal.metal
+				-I ${CMAKE_SOURCE_DIR}/libs/MVS
+				-o ${CMAKE_BINARY_DIR}/SceneRefineMetal.air
+		)
+		ADD_TEST(NAME PatchMatchMetalShaderCompile
+			COMMAND xcrun -sdk macosx metal -c
+				${CMAKE_SOURCE_DIR}/libs/MVS/PatchMatchMetal.metal
+				-I ${CMAKE_SOURCE_DIR}/libs/MVS
+				-o ${CMAKE_BINARY_DIR}/PatchMatchMetal.air
+		)
+	endif()
+	if(_USE_CUDA)
+		ADD_TEST(NAME MVSPipelineCudaTest COMMAND $<TARGET_FILE:Tests> "2" "0" "0" "cuda")
+		SET_TESTS_PROPERTIES(MVSPipelineCudaTest PROPERTIES RESOURCE_LOCK OpenMVSMVSTestData)
+		ADD_TEST(NAME MVSInProcessCpuCudaSpeedTest
+			COMMAND ${CMAKE_COMMAND}
+				-DTESTS_EXE=$<TARGET_FILE:Tests>
+				-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}
+				-DTEST_REFERENCE_BACKEND=cpu
+				-DTEST_CANDIDATE_BACKEND=cuda
+				-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMVSInProcessBackendSpeed.cmake
+		)
+		SET_TESTS_PROPERTIES(MVSInProcessCpuCudaSpeedTest PROPERTIES TIMEOUT 1200 RESOURCE_LOCK OpenMVSMVSTestData)
+	endif()
+	if(TARGET DensifyPointCloud AND TARGET ReconstructMesh AND TARGET RefineMesh)
+		ADD_TEST(NAME MVSInvalidGpuBackendTest
+			COMMAND ${CMAKE_COMMAND}
+				-DDENSIFY_EXE=$<TARGET_FILE:DensifyPointCloud>
+				-DREFINE_EXE=$<TARGET_FILE:RefineMesh>
+				-DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+				-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunInvalidGpuBackend.cmake
+		)
+		if(APPLE AND NOT _USE_CUDA)
+			if(TARGET Viewer)
+				SET(_NO_CUDA_VIEWER_TEST_BINARY -DTEST_BINARY_18=$<TARGET_FILE:Viewer>)
+			else()
+				SET(_NO_CUDA_VIEWER_TEST_BINARY)
+			endif()
+			ADD_TEST(NAME NoCudaDynamicLinkageTest
+				COMMAND ${CMAKE_COMMAND}
+					-DTEST_BINARY_1=$<TARGET_FILE:DensifyPointCloud>
+					-DTEST_BINARY_2=$<TARGET_FILE:RefineMesh>
+					-DTEST_BINARY_3=$<TARGET_FILE:ReconstructMesh>
+					-DTEST_BINARY_4=$<TARGET_FILE:Tests>
+					-DTEST_BINARY_5=$<TARGET_FILE:MVS>
+					-DTEST_BINARY_6=$<TARGET_FILE:Common>
+					-DTEST_BINARY_7=$<TARGET_FILE:CreateStructure>
+					-DTEST_BINARY_8=$<TARGET_FILE:ExtractKeyframes>
+					-DTEST_BINARY_9=$<TARGET_FILE:InterfaceCOLMAP>
+					-DTEST_BINARY_10=$<TARGET_FILE:InterfaceMetashape>
+					-DTEST_BINARY_11=$<TARGET_FILE:InterfaceMVSNet>
+					-DTEST_BINARY_12=$<TARGET_FILE:InterfacePolycam>
+					-DTEST_BINARY_13=$<TARGET_FILE:TextureMesh>
+					-DTEST_BINARY_14=$<TARGET_FILE:TransformScene>
+					-DTEST_BINARY_15=$<TARGET_FILE:SFM>
+					-DTEST_BINARY_16=$<TARGET_FILE:IO>
+					-DTEST_BINARY_17=$<TARGET_FILE:Math>
+					${_NO_CUDA_VIEWER_TEST_BINARY}
+					-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunNoCudaLinkage.cmake
+			)
+		endif()
+		if(_USE_METAL)
+			ADD_TEST(NAME MVSMetalAppFixtureTest
+				COMMAND ${CMAKE_COMMAND}
+					-DTEST_DATA_DIR=${CMAKE_SOURCE_DIR}/apps/Tests/data
+					-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/metal-app-fixture
+					-DTEST_GPU_BACKEND=metal
+					-DTEST_EXPECTED_DENSIFY_BACKEND=metal
+					-DTEST_EXPECTED_REFINE_BACKEND=metal
+					-DDENSIFY_EXE=$<TARGET_FILE:DensifyPointCloud>
+					-DRECONSTRUCT_EXE=$<TARGET_FILE:ReconstructMesh>
+					-DREFINE_EXE=$<TARGET_FILE:RefineMesh>
+					-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMetalAppFixture.cmake
+			)
+			SET_TESTS_PROPERTIES(MVSMetalAppFixtureTest PROPERTIES TIMEOUT 180)
+			ADD_TEST(NAME MVSAppCpuMetalSceneFileParityTest
+				COMMAND ${CMAKE_COMMAND}
+					-DTEST_SCENE_FILE=${CMAKE_SOURCE_DIR}/apps/Tests/data/scene.mvs
+					-DTEST_SCENE_COPY_ROOT=${CMAKE_SOURCE_DIR}/apps/Tests/data
+					-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/app-cpu-metal-parity-scene-file
+					-DTEST_REFERENCE_BACKEND=cpu
+					-DTEST_CANDIDATE_BACKEND=metal
+					-DDENSIFY_EXE=$<TARGET_FILE:DensifyPointCloud>
+					-DRECONSTRUCT_EXE=$<TARGET_FILE:ReconstructMesh>
+					-DREFINE_EXE=$<TARGET_FILE:RefineMesh>
+					-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMVSAppBackendParity.cmake
+			)
+			SET_TESTS_PROPERTIES(MVSAppCpuMetalSceneFileParityTest PROPERTIES TIMEOUT 900)
+		endif()
+		if(_USE_CUDA)
+			ADD_TEST(NAME MVSAppCpuCudaParityTest
+				COMMAND ${CMAKE_COMMAND}
+					-DTEST_DATA_DIR=${CMAKE_SOURCE_DIR}/apps/Tests/data
+					-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/app-cpu-cuda-parity
+					-DTEST_REFERENCE_BACKEND=cpu
+					-DTEST_CANDIDATE_BACKEND=cuda
+					-DDENSIFY_EXE=$<TARGET_FILE:DensifyPointCloud>
+					-DRECONSTRUCT_EXE=$<TARGET_FILE:ReconstructMesh>
+					-DREFINE_EXE=$<TARGET_FILE:RefineMesh>
+					-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMVSAppBackendParity.cmake
+			)
+			SET_TESTS_PROPERTIES(MVSAppCpuCudaParityTest PROPERTIES TIMEOUT 900)
+		endif()
+		if(NOT _USE_METAL AND NOT _USE_CUDA)
+			ADD_TEST(NAME MVSNoMetalAppFallbackTest
+				COMMAND ${CMAKE_COMMAND}
+					-DTEST_DATA_DIR=${CMAKE_SOURCE_DIR}/apps/Tests/data
+					-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/no-metal-app-fallback
+					-DTEST_GPU_BACKEND=metal
+					-DTEST_EXPECTED_DENSIFY_BACKEND=cpu
+					-DTEST_EXPECTED_REFINE_BACKEND=cpu
+					-DDENSIFY_EXE=$<TARGET_FILE:DensifyPointCloud>
+					-DRECONSTRUCT_EXE=$<TARGET_FILE:ReconstructMesh>
+					-DREFINE_EXE=$<TARGET_FILE:RefineMesh>
+					-P ${CMAKE_SOURCE_DIR}/apps/Tests/RunMetalAppFixture.cmake
+			)
+			SET_TESTS_PROPERTIES(MVSNoMetalAppFallbackTest PROPERTIES TIMEOUT 180)
+		endif()
+	endif()
 endif()
 
 # Export the package for use from the build-tree

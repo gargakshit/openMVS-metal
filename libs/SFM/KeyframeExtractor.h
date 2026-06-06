@@ -63,7 +63,7 @@ struct SFM_API KeyframeConfig
 	// will be blurred with this kernel size to improve tracking in noisy/video-compressed frames.
 	unsigned blurSize { 0 };
 
-	// Use CUDA for SiftGPU if available (otherwise OpenGL)
+	// Prefer CUDA for SiftGPU only when compiled (otherwise OpenGL)
 	bool useCUDA = true;
 
 	// Output directory for keyframe images
@@ -120,4 +120,3 @@ SFM_API float ComputeHomographyOverlap(
 } // namespace SFM
 
 #endif // _SFM_KEYFRAMEEXTRACTOR_H_
-

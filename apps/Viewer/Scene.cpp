@@ -31,6 +31,7 @@
 
 #include "Common.h"
 #include "Scene.h"
+#include "../../libs/Common/UtilGPU.h"
 
 using namespace VIEWER;
 
@@ -141,6 +142,7 @@ public:
 		MVS::OPTDENSE::nEstimateNormals = options.estimateNormals ? 2u : 0u;
 		MVS::OPTDENSE::bRemoveDmaps = options.removeDepthMaps;
 		MVS::OPTDENSE::nOptimize = options.postprocess ? (unsigned)MVS::OPTDENSE::OPTIMIZE : 0u;
+		SEACAVE::GPU::desiredBackend = options.gpuBackend;
 
 		return pScene->scene.DenseReconstruction(options.fusionMode, options.cropToROI, options.borderROI, options.sampleMeshNeighbors);
 	}

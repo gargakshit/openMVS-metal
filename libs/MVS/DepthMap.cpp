@@ -118,7 +118,7 @@ MDEFVAR_OPTDENSE_uint32(nEstimateNormals, "Estimate Normals", "should we estimat
 MDEFVAR_OPTDENSE_float(fNCCThresholdKeep, "NCC Threshold Keep", "Maximum 1-NCC score accepted for a match", "0.9", "0.5")
 DEFVAR_OPTDENSE_uint32(nEstimationIters, "Estimation Iters", "Number of patch-match iterations", "3")
 DEFVAR_OPTDENSE_uint32(nEstimationGeometricIters, "Estimation Geometric Iters", "Number of geometric consistent patch-match iterations (0 - disabled)", "2")
-DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch CUDA Instances", "Number of parallel CUDA PatchMatch worker instances (clamped to nMaxThreads)", "4")
+DEFVAR_OPTDENSE_uint32(nPatchMatchCUDAInstances, "PatchMatch GPU Instances", "Number of parallel CUDA/Metal PatchMatch worker instances (clamped to nMaxThreads)", "4")
 MDEFVAR_OPTDENSE_float(fEstimationGeometricWeight, "Estimation Geometric Weight", "pairwise geometric consistency cost weight", "0.1")
 MDEFVAR_OPTDENSE_uint32(nRandomIters, "Random Iters", "Number of iterations for random assignment per pixel", "6")
 MDEFVAR_OPTDENSE_uint32(nRandomMaxScale, "Random Max Scale", "Maximum number of iterations to skip during random assignment", "2")
@@ -1591,13 +1591,19 @@ void MVS::EstimatePointNormals(const ImageArr& images, PointCloud& pointcloud, i
 
 bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, NormalMap& normalMap)
 {
+	return EstimateNormalMap(K, depthMap, normalMap, 1, Depth(0.03f));
+}
+
+bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, NormalMap& normalMap, int radius, Depth depthSimilarityThreshold)
+{
 	normalMap.create(depthMap.size());
+	radius = MAXF(1, radius);
 	struct Tool {
-		static bool IsDepthValid(Depth d, Depth nd) {
-			return nd > 0 && IsDepthSimilar(d, nd, Depth(0.03f));
+		static bool IsDepthValid(Depth d, Depth nd, Depth threshold) {
+			return nd > 0 && IsDepthSimilar(d, nd, threshold);
 		}
 		// computes depth gradient (first derivative) at current pixel
-		static bool DepthGradient(const DepthMap& depthMap, const ImageRef& ir, Point3f& ws) {
+		static bool DepthGradient(const DepthMap& depthMap, const ImageRef& ir, Point3f& ws, int radius, Depth depthSimilarityThreshold) {
 			float& w  = ws[0];
 			float& wx = ws[1];
 			float& wy = ws[2];
@@ -1608,17 +1614,16 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 			// the coefficients of which give gradient of depth
 			int whxx(0), whxy(0), whyy(0);
 			float wgx(0), wgy(0);
-			const int Radius(1);
 			int n(0);
-			for (int y = -Radius; y <= Radius; ++y) {
-				for (int x = -Radius; x <= Radius; ++x) {
+			for (int y = -radius; y <= radius; ++y) {
+				for (int x = -radius; x <= radius; ++x) {
 					if (x == 0 && y == 0)
 						continue;
 					const ImageRef pt(ir.x+x, ir.y+y);
 					if (!depthMap.isInside(pt))
 						continue;
 					const float wi(depthMap(pt));
-					if (!IsDepthValid(w, wi))
+					if (!IsDepthValid(w, wi, depthSimilarityThreshold))
 						continue;
 					whxx += x*x; whxy += x*y; whyy += y*y;
 					wgx += (wi - w)*x; wgy += (wi - w)*y;
@@ -1671,7 +1676,7 @@ bool MVS::EstimateNormalMap(const Matrix3x3f& K, const DepthMap& depthMap, Norma
 			#else
 			// calculates depth gradient at x
 			Normal& n = normalMap(r,c);
-			if (Tool::DepthGradient(depthMap, ImageRef(c,r), n))
+			if (Tool::DepthGradient(depthMap, ImageRef(c,r), n, radius, depthSimilarityThreshold))
 				n = Tool::ComputeNormal(K, c, r, n.x, n.y, n.z);
 			else
 				n = Normal::ZERO;

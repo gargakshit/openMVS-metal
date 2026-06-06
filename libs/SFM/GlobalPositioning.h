@@ -63,7 +63,7 @@ struct SFM_API GlobalPositionerOptions
 	bool optimizePoints = true;
 	bool optimizeScales = true;
 
-	// GPU/CUDA options
+	// GPU solver options; CUDA is used when compiled, Metal has no Ceres backend.
 	bool useGpu = true;
 	unsigned minNumImagesGpuSolver = 50;
 

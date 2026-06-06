@@ -101,7 +101,7 @@ Scene::DenseReconstruction(nFusionMode, ...)
 - **Semi-Global Matching** (`SemiGlobalMatcher.h`): Optional SGM refinement pass
 - **Confidence filtering**: Multi-view consistency checks
 - **DMapCache** (`DMapCache.h`): LRU disk cache for large-scale processing
-- **PatchMatchCUDA** (`PatchMatchCUDA.h`): GPU-accelerated depth estimation
+- **PatchMatchCUDA/PatchMatchMetal** (`PatchMatchCUDA.h`, `PatchMatchMetal.h`): GPU-accelerated depth estimation
 
 ### 3. Mesh Reconstruction (`SceneReconstruct.cpp`, 43KB)
 ```cpp
@@ -109,10 +109,11 @@ Scene::ReconstructMesh(distInsert, bUseFreeSpaceSupport, ...)
 ```
 Uses CGAL Poisson reconstruction or Delaunay-based method. Integrates free-space support for occlusion handling.
 
-### 4. Mesh Refinement (`SceneRefine.cpp`, 49KB; `SceneRefineCUDA.cpp`, 89KB)
+### 4. Mesh Refinement (`SceneRefine.cpp`, 49KB; `SceneRefineCUDA.cpp`, 89KB; `SceneRefineMetal.*`)
 ```cpp
 Scene::RefineMesh(nResolutionLevel, ...)     // CPU
-Scene::RefineMeshCUDA(...)                    // GPU
+Scene::RefineMeshCUDA(...)                    // CUDA GPU
+Scene::RefineMeshMetal(...)                   // Metal GPU
 ```
 Multi-resolution loop: subdivide -> project to images -> deform vertices using image gradients -> regularize -> close holes -> decimate.
 
@@ -139,11 +140,11 @@ Renders the textured mesh from each camera viewpoint and compares against the or
 - **Meshes**: `.ply`, `.obj` (with MTL), `.gltf`
 - **Interface**: COLMAP, OpenMVG via `Interface.h`
 
-## GPU/CUDA Components
-- `PatchMatchCUDA.h/cpp/inl` - GPU-parallel depth estimation
-- `SceneRefineCUDA.cpp` - GPU mesh refinement with CUDA kernels
-- `CUDA/Camera.h`, `CUDA/Maths.h` - GPU utility types
-- GPU selection via `desiredDeviceID`, compute capabilities 5.0+
+## GPU CUDA/Metal Components
+- `PatchMatchCUDA.h/cpp/inl`, `PatchMatchMetal.h/mm/metal` - GPU-parallel depth estimation
+- `SceneRefineCUDA.cpp`, `SceneRefineMetal.cpp/mm/metal` - GPU mesh refinement
+- `CUDA/Camera.h`, `CUDA/Maths.h`, `Metal/Camera.h`, `Metal/Maths.h` - GPU utility types
+- GPU backend selection via `--gpu-backend auto|cpu|cuda|metal`; CUDA device selection remains CUDA-specific
 
 ## Performance Optimizations
 - **Parallelization**: OpenMP + `BS::light_thread_pool`
@@ -153,5 +154,5 @@ Renders the textured mesh from each camera viewpoint and compares against the or
 
 ## Build & Dependencies
 - **Required**: Common, Math, IO, CGAL, OpenCV, Eigen3, Boost
-- **Optional**: Ceres Solver, CUDA Toolkit, Python (bindings)
+- **Optional**: Ceres Solver, CUDA Toolkit, Apple Metal framework, Python (bindings)
 - **Precompiled header**: `Common.h`

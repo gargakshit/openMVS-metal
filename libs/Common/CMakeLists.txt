@@ -10,6 +10,12 @@ endif()
 # List sources files
 FILE(GLOB LIBRARY_FILES_C "*.cpp")
 FILE(GLOB LIBRARY_FILES_H "*.h" "*.inl")
+if(_USE_METAL)
+	LIST(APPEND LIBRARY_FILES_C "${CMAKE_CURRENT_SOURCE_DIR}/UtilMetal.mm")
+	SET_SOURCE_FILES_PROPERTIES("${CMAKE_CURRENT_SOURCE_DIR}/UtilMetal.mm" PROPERTIES
+		COMPILE_OPTIONS "-fobjc-arc;-fmodules;-fcxx-modules;-fmodules-cache-path=${CMAKE_BINARY_DIR}/clang-module-cache"
+		SKIP_PRECOMPILE_HEADERS ON)
+endif()
 
 cxx_library_with_type(Common "Libs" "" "${cxx_default}"
 	${LIBRARY_FILES_C} ${LIBRARY_FILES_H}

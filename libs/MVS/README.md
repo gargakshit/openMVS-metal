@@ -130,7 +130,7 @@ Input: Sparse point cloud + calibrated camera poses (.mvs file)
 ┌─────────────────────────────────────────────┐
 │ 4. Mesh Refinement                           │
 │    SceneRefine.cpp (49 KB) - CPU             │
-│    SceneRefineCUDA.cpp (89 KB) - GPU         │
+│    SceneRefineCUDA/Metal.* - GPU             │
 │    Multi-resolution image-guided deformation │
 │    Topology repair (hole closing, decimation)│
 └─────────────────────────────────────────────┘
@@ -161,7 +161,7 @@ All depth maps are then **fused** into a single dense point cloud by projecting 
 
 **Memory management**: Large datasets can produce hundreds of depth maps. The `DMapCache` (LRU disk cache) automatically writes depth maps to disk and reloads them when needed, keeping memory usage bounded.
 
-**GPU acceleration**: `PatchMatchCUDA` provides a CUDA implementation for the depth estimation step, running per-pixel matching in parallel on the GPU.
+**GPU acceleration**: `PatchMatchCUDA` and `PatchMatchMetal` provide CUDA and Apple Metal implementations for the depth estimation step, running per-pixel matching in parallel on the GPU. Mesh refinement also has CUDA and Metal GPU paths for projection and photometric-gradient work.
 
 ### Stage 3: Mesh Reconstruction
 
@@ -194,18 +194,18 @@ Creates texture atlases by:
 3. **Packing** face textures into atlas images using `RectsBinPack`
 4. **Seam leveling**: Adjusting colors at face boundaries to prevent visible seams (both global and local blending)
 
-## GPU (CUDA) Support
+## GPU (CUDA/Metal) Support
 
 Several stages have GPU-accelerated variants:
 
 | Component | File | What it accelerates |
 |-----------|------|-------------------|
-| PatchMatch stereo | `PatchMatchCUDA.h/cpp/inl` | Per-pixel depth estimation |
-| Mesh refinement | `SceneRefineCUDA.cpp` | Face normal computation, vertex deformation |
-| Camera operations | `CUDA/Camera.h` | Projection/unprojection on GPU |
-| Math utilities | `CUDA/Maths.h` | Vector/matrix operations |
+| PatchMatch stereo | `PatchMatchCUDA.h/cpp/inl`, `PatchMatchMetal.h/mm/metal` | Per-pixel depth estimation |
+| Mesh refinement | `SceneRefineCUDA.cpp`, `SceneRefineMetal.cpp/mm/metal` | Face normal computation, vertex deformation |
+| Camera operations | `CUDA/Camera.h`, `Metal/Camera.h` | Projection/unprojection on GPU |
+| Math utilities | `CUDA/Maths.h`, `Metal/Maths.h` | Vector/matrix operations |
 
-GPU code targets compute capabilities 5.0, 7.2, and 7.5+. When CUDA is not available, everything falls back to CPU implementations transparently.
+CUDA code targets compute capabilities 5.0, 7.2, and 7.5+. Metal code targets Apple platforms with the Metal framework. When a requested GPU backend is not compiled or available, OpenMVS falls back to CPU for compatible automatic paths; explicitly selected Metal failures in the first-party MVS GPU paths are treated as errors rather than silently satisfying GPU verification with CPU work.
 
 ## File Formats
 
@@ -249,6 +249,8 @@ libs/MVS/
 ├── SceneReconstruct.cpp      # Mesh from points (43 KB)
 ├── SceneRefine.cpp           # CPU mesh refinement (49 KB)
 ├── SceneRefineCUDA.cpp       # GPU mesh refinement (89 KB)
+├── SceneRefineMetal.cpp/mm   # Metal mesh refinement
+├── SceneRefineMetal.metal    # Metal mesh refinement kernels
 ├── SceneTexture.cpp          # Texture mapping (82 KB)
 │
 │ # Supporting algorithms
@@ -256,10 +258,14 @@ libs/MVS/
 ├── DMapCache.h/cpp           # LRU depth map disk cache
 ├── RectsBinPack.h/cpp        # Texture atlas packing
 │
-│ # CUDA components
-├── PatchMatchCUDA.h/cpp/inl  # GPU depth estimation
-├── CUDA/Camera.h             # GPU camera operations
-└── CUDA/Maths.h              # GPU math utilities
+│ # GPU components
+├── PatchMatchCUDA.h/cpp/inl  # CUDA depth estimation
+├── PatchMatchMetal.h/mm      # Metal depth estimation host path
+├── PatchMatchMetal.metal     # Metal depth estimation kernels
+├── CUDA/Camera.h             # CUDA camera operations
+├── CUDA/Maths.h              # CUDA math utilities
+├── Metal/Camera.h            # Metal camera operations
+└── Metal/Maths.h             # Metal math utilities
 ```
 
 ## Dependencies
@@ -270,5 +276,6 @@ libs/MVS/
 - **Eigen3** (required): Linear algebra
 - **Boost** (required): Serialization for .mvs format
 - **Ceres Solver** (optional): Non-linear optimization
-- **CUDA Toolkit** (optional): GPU acceleration
+- **CUDA Toolkit** (optional): non-Apple CUDA GPU acceleration
+- **Metal framework** (optional): Apple first-party MVS GPU acceleration
 - **Python** (optional): Python bindings (`pyOpenMVS`)
